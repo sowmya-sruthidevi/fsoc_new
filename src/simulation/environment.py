@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont
 from src.simulation.beacon import Beacon
 from src.simulation.camera import VirtualCamera
 from src.simulation.sky_environment import SkyEnvironment
+from src.simulation.ocean_environment import OceanEnvironment
 from src.tracking.controller import TrackingController
 
 
@@ -20,18 +21,19 @@ class Environment(QWidget):
         self.setMinimumSize(1000, 650)
         self.setFocusPolicy(Qt.StrongFocus)
 
-        # ---------------------------------
+        # =================================
         # CURRENT ENVIRONMENT
-        # ---------------------------------
+        # =================================
 
         self.current_environment = "SPACE"
 
-        # Create sky environment
+        # Create environments
         self.sky_environment = SkyEnvironment()
+        self.ocean_environment = OceanEnvironment()
 
-        # ---------------------------------
+        # =================================
         # SPACE STARS
-        # ---------------------------------
+        # =================================
 
         self.stars = []
 
@@ -42,10 +44,7 @@ class Environment(QWidget):
                 "x": random.randint(0, 1400),
                 "y": random.randint(0, 900),
 
-                "size": random.uniform(
-                    1,
-                    3
-                ),
+                "size": random.uniform(1, 3),
 
                 "phase": random.uniform(
                     0,
@@ -59,24 +58,24 @@ class Environment(QWidget):
 
             })
 
-        # ---------------------------------
+        # =================================
         # ANIMATION TIME
-        # ---------------------------------
+        # =================================
 
         self.animation_time = 0.0
 
-        # ---------------------------------
-        # CREATE BEACON / TARGET
-        # ---------------------------------
+        # =================================
+        # CREATE TARGET
+        # =================================
 
         self.beacon = Beacon(
             x=300,
             y=200
         )
 
-        # ---------------------------------
+        # =================================
         # CREATE CAMERA
-        # ---------------------------------
+        # =================================
 
         self.camera = VirtualCamera(
             x=250,
@@ -85,48 +84,48 @@ class Environment(QWidget):
             height=250
         )
 
-        # ---------------------------------
-        # CREATE CONTROLLER
-        # ---------------------------------
+        # =================================
+        # TRACKING CONTROLLER
+        # =================================
 
         self.controller = TrackingController()
 
-        # ---------------------------------
+        # =================================
         # TARGET VISIBILITY
-        # ---------------------------------
+        # =================================
 
         self.target_visible = False
         self.previous_visible = False
 
-        # ---------------------------------
+        # =================================
         # SIMULATION STATE
-        # ---------------------------------
+        # =================================
 
         self.state = "SEARCHING"
         self.state_counter = 0
 
-        # ---------------------------------
+        # =================================
         # TRACKING ERROR
-        # ---------------------------------
+        # =================================
 
         self.error_x = 0.0
         self.error_y = 0.0
 
-        # ---------------------------------
+        # =================================
         # LOCK THRESHOLD
-        # ---------------------------------
+        # =================================
 
         self.lock_threshold = 80.0
 
-        # ---------------------------------
+        # =================================
         # SIMULATION RUNNING
-        # ---------------------------------
+        # =================================
 
         self.is_running = True
 
-        # ---------------------------------
+        # =================================
         # TIMER
-        # ---------------------------------
+        # =================================
 
         self.timer = QTimer(self)
 
@@ -143,19 +142,22 @@ class Environment(QWidget):
 
     def update_simulation(self):
 
-        # ---------------------------------
-        # UPDATE ANIMATION
-        # ---------------------------------
-
+        # Update animation
         self.animation_time += 0.05
 
         # ---------------------------------
-        # UPDATE SKY CLOUDS
+        # UPDATE ENVIRONMENT ANIMATIONS
         # ---------------------------------
 
         if self.current_environment == "SKY":
 
             self.sky_environment.update(
+                self.width()
+            )
+
+        elif self.current_environment == "OCEAN":
+
+            self.ocean_environment.update(
                 self.width()
             )
 
@@ -174,20 +176,17 @@ class Environment(QWidget):
 
         if self.current_environment == "SPACE":
 
-            # Normal fast-moving beacon
+            # Normal beacon movement
+
             self.beacon.update(
                 self.width(),
                 self.height()
             )
 
+
         elif self.current_environment == "SKY":
 
-            # ---------------------------------
-            # SLOW SUN MOVEMENT
-            # ---------------------------------
-
-            # The sun moves much slower
-            # than the space beacon
+            # Slow sun movement
 
             self.beacon.x += (
                 self.beacon.vx * 0.02
@@ -197,15 +196,10 @@ class Environment(QWidget):
                 self.beacon.vy * 0.01
             )
 
-            # ---------------------------------
-            # KEEP SUN INSIDE WORLD
-            # ---------------------------------
-
-            # Left boundary
+            # Keep sun inside boundaries
 
             if (
-                self.beacon.x
-                - self.beacon.radius
+                self.beacon.x - self.beacon.radius
                 <= 0
             ):
 
@@ -215,11 +209,9 @@ class Environment(QWidget):
 
                 self.beacon.vx *= -1
 
-            # Right boundary
 
             elif (
-                self.beacon.x
-                + self.beacon.radius
+                self.beacon.x + self.beacon.radius
                 >= self.width()
             ):
 
@@ -230,11 +222,9 @@ class Environment(QWidget):
 
                 self.beacon.vx *= -1
 
-            # Top boundary
 
             if (
-                self.beacon.y
-                - self.beacon.radius
+                self.beacon.y - self.beacon.radius
                 <= 0
             ):
 
@@ -244,11 +234,9 @@ class Environment(QWidget):
 
                 self.beacon.vy *= -1
 
-            # Bottom boundary
 
             elif (
-                self.beacon.y
-                + self.beacon.radius
+                self.beacon.y + self.beacon.radius
                 >= self.height()
             ):
 
@@ -259,36 +247,64 @@ class Environment(QWidget):
 
                 self.beacon.vy *= -1
 
-        # ---------------------------------
+
+        elif self.current_environment == "OCEAN":
+
+            # UAV moves normally
+
+            self.beacon.update(
+                self.width(),
+                self.height()
+            )
+
+        # =================================
         # CHECK TARGET VISIBILITY
-        # ---------------------------------
+        # =================================
 
         self.target_visible = (
+
             self.camera.is_target_visible(
+
                 self.beacon.x,
                 self.beacon.y
+
             )
+
         )
 
-        # ---------------------------------
+        # =================================
         # STATE TRANSITIONS
-        # ---------------------------------
+        # =================================
 
         if (
+
             self.target_visible
-            and not self.previous_visible
+
+            and
+
+            not self.previous_visible
+
         ):
 
             self.state = "ACQUIRED"
+
             self.state_counter = 60
 
+
         elif (
+
             not self.target_visible
-            and self.previous_visible
+
+            and
+
+            self.previous_visible
+
         ):
 
             self.state = "LOST"
+
             self.state_counter = 60
+
 
         # =================================
         # CAMERA BEHAVIOR
@@ -299,57 +315,78 @@ class Environment(QWidget):
             # Calculate error
 
             self.error_x, self.error_y = (
+
                 self.camera.calculate_error(
+
                     self.beacon.x,
                     self.beacon.y
+
                 )
+
             )
 
-            # Controller calculates movement
+            # Controller movement
 
             move_x, move_y = (
+
                 self.controller.calculate_movement(
+
                     self.error_x,
                     self.error_y
+
                 )
+
             )
 
             # Move camera
 
             self.camera.move(
+
                 move_x,
                 move_y,
+
                 self.width(),
                 self.height()
+
             )
+
 
         else:
 
             # Search for target
 
             self.camera.search(
+
                 self.width(),
                 self.height()
+
             )
 
-        # ---------------------------------
+
+        # =================================
         # RECALCULATE ERROR
-        # ---------------------------------
+        # =================================
 
         self.error_x, self.error_y = (
+
             self.camera.calculate_error(
+
                 self.beacon.x,
                 self.beacon.y
+
             )
+
         )
 
-        # ---------------------------------
+
+        # =================================
         # UPDATE STATE
-        # ---------------------------------
+        # =================================
 
         if self.state_counter > 0:
 
             self.state_counter -= 1
+
 
         else:
 
@@ -357,9 +394,11 @@ class Environment(QWidget):
 
                 self.state = "SEARCHING"
 
+
             else:
 
                 if (
+
                     abs(self.error_x)
                     <= self.lock_threshold
 
@@ -367,41 +406,55 @@ class Environment(QWidget):
 
                     abs(self.error_y)
                     <= self.lock_threshold
+
                 ):
 
                     self.state = "LOCKED"
+
 
                 else:
 
                     self.state = "TRACKING"
 
-        # ---------------------------------
+
+        # =================================
         # SAVE PREVIOUS VISIBILITY
-        # ---------------------------------
+        # =================================
 
         self.previous_visible = (
+
             self.target_visible
+
         )
 
-        # ---------------------------------
+        # =================================
         # REDRAW
-        # ---------------------------------
+        # =================================
 
         self.update()
 
 
     # =================================
-    # DRAW SPACE ENVIRONMENT
+    # DRAW SPACE BACKGROUND
     # =================================
 
     def draw_space_background(self, painter):
 
         painter.fillRect(
+
             self.rect(),
-            QColor(5, 8, 20)
+
+            QColor(
+                5,
+                8,
+                20
+            )
+
         )
 
-        painter.setPen(Qt.NoPen)
+        painter.setPen(
+            Qt.NoPen
+        )
 
         for star in self.stars:
 
@@ -422,15 +475,20 @@ class Environment(QWidget):
             ) / 2
 
             value = int(
-                120 + brightness * 135
+
+                120
+                + brightness * 135
+
             )
 
             painter.setBrush(
 
                 QColor(
+
                     value,
                     value,
                     value
+
                 )
 
             )
@@ -453,8 +511,15 @@ class Environment(QWidget):
                 int(star["x"]),
                 int(star["y"]),
 
-                max(1, int(size)),
-                max(1, int(size))
+                max(
+                    1,
+                    int(size)
+                ),
+
+                max(
+                    1,
+                    int(size)
+                )
 
             )
 
@@ -468,7 +533,9 @@ class Environment(QWidget):
         pulse = (
 
             math.sin(
+
                 self.animation_time * 6
+
             )
 
             + 1
@@ -485,7 +552,9 @@ class Environment(QWidget):
 
         )
 
-        painter.setPen(Qt.NoPen)
+        painter.setPen(
+            Qt.NoPen
+        )
 
         painter.setBrush(
 
@@ -496,8 +565,10 @@ class Environment(QWidget):
                 40,
 
                 int(
+
                     50
                     + pulse * 100
+
                 )
 
             )
@@ -507,17 +578,26 @@ class Environment(QWidget):
         painter.drawEllipse(
 
             int(
+
                 self.beacon.x
                 - glow_radius
+
             ),
 
             int(
+
                 self.beacon.y
                 - glow_radius
+
             ),
 
-            int(glow_radius * 2),
-            int(glow_radius * 2)
+            int(
+                glow_radius * 2
+            ),
+
+            int(
+                glow_radius * 2
+            )
 
         )
 
@@ -543,13 +623,17 @@ class Environment(QWidget):
         painter.drawEllipse(
 
             int(
+
                 self.beacon.x
                 - self.beacon.radius
+
             ),
 
             int(
+
                 self.beacon.y
                 - self.beacon.radius
+
             ),
 
             int(
@@ -571,15 +655,16 @@ class Environment(QWidget):
 
         painter = QPainter(self)
 
-        # ---------------------------------
-        # DRAW SELECTED ENVIRONMENT
-        # ---------------------------------
+        # =================================
+        # DRAW ENVIRONMENT
+        # =================================
 
         if self.current_environment == "SPACE":
 
             self.draw_space_background(
                 painter
             )
+
 
         elif self.current_environment == "SKY":
 
@@ -593,9 +678,23 @@ class Environment(QWidget):
 
             )
 
-        # ---------------------------------
+
+        elif self.current_environment == "OCEAN":
+
+            self.ocean_environment.draw(
+
+                painter,
+
+                self.width(),
+
+                self.height()
+
+            )
+
+
+        # =================================
         # STATUS COLORS
-        # ---------------------------------
+        # =================================
 
         if self.state == "SEARCHING":
 
@@ -609,6 +708,7 @@ class Environment(QWidget):
 
             camera_color = status_color
 
+
         elif self.state == "ACQUIRED":
 
             status_text = "TARGET ACQUIRED"
@@ -620,6 +720,7 @@ class Environment(QWidget):
             )
 
             camera_color = status_color
+
 
         elif self.state == "TRACKING":
 
@@ -633,6 +734,7 @@ class Environment(QWidget):
 
             camera_color = status_color
 
+
         elif self.state == "LOCKED":
 
             status_text = "TARGET LOCKED"
@@ -644,6 +746,7 @@ class Environment(QWidget):
             )
 
             camera_color = status_color
+
 
         elif self.state == "LOST":
 
@@ -657,6 +760,7 @@ class Environment(QWidget):
 
             camera_color = status_color
 
+
         else:
 
             status_text = "SEARCHING TARGET"
@@ -669,9 +773,10 @@ class Environment(QWidget):
 
             camera_color = status_color
 
-        # ---------------------------------
+
+        # =================================
         # DRAW CAMERA FOV
-        # ---------------------------------
+        # =================================
 
         camera_pen = QPen(
             camera_color
@@ -699,20 +804,25 @@ class Environment(QWidget):
 
         )
 
-        # ---------------------------------
-        # CAMERA CENTER CROSSHAIR
-        # ---------------------------------
+
+        # =================================
+        # DRAW CAMERA CENTER
+        # =================================
 
         center_x, center_y = (
+
             self.camera.get_center()
+
         )
 
         center_pen = QPen(
+
             QColor(
                 0,
                 200,
                 255
             )
+
         )
 
         center_pen.setWidth(2)
@@ -745,15 +855,17 @@ class Environment(QWidget):
 
         )
 
-        # ---------------------------------
+
+        # =================================
         # DRAW TARGET
-        # ---------------------------------
+        # =================================
 
         if self.current_environment == "SPACE":
 
             self.draw_space_beacon(
                 painter
             )
+
 
         elif self.current_environment == "SKY":
 
@@ -769,9 +881,25 @@ class Environment(QWidget):
 
             )
 
-        # ---------------------------------
+
+        elif self.current_environment == "OCEAN":
+
+            self.ocean_environment.draw_target(
+
+                painter,
+
+                self.beacon.x,
+
+                self.beacon.y,
+
+                self.animation_time
+
+            )
+
+
+        # =================================
         # DRAW LOCK BOX
-        # ---------------------------------
+        # =================================
 
         if self.state == "LOCKED":
 
@@ -805,13 +933,17 @@ class Environment(QWidget):
             painter.drawRect(
 
                 int(
+
                     self.beacon.x
                     - box_size / 2
+
                 ),
 
                 int(
+
                     self.beacon.y
                     - box_size / 2
+
                 ),
 
                 int(box_size),
@@ -820,9 +952,10 @@ class Environment(QWidget):
 
             )
 
-        # ---------------------------------
+
+        # =================================
         # DRAW STATUS TEXT
-        # ---------------------------------
+        # =================================
 
         painter.setPen(
             status_color
@@ -847,16 +980,19 @@ class Environment(QWidget):
 
         )
 
-        # ---------------------------------
+
+        # =================================
         # ENVIRONMENT NAME
-        # ---------------------------------
+        # =================================
 
         painter.setPen(
+
             QColor(
                 220,
                 220,
                 220
             )
+
         )
 
         env_font = QFont()
@@ -879,16 +1015,19 @@ class Environment(QWidget):
 
         )
 
-        # ---------------------------------
+
+        # =================================
         # ERROR TEXT
-        # ---------------------------------
+        # =================================
 
         painter.setPen(
+
             QColor(
                 220,
                 220,
                 220
             )
+
         )
 
         error_font = QFont()
@@ -919,9 +1058,10 @@ class Environment(QWidget):
 
         )
 
-        # ---------------------------------
+
+        # =================================
         # LOCK INFORMATION
-        # ---------------------------------
+        # =================================
 
         if self.state == "LOCKED":
 
@@ -955,16 +1095,19 @@ class Environment(QWidget):
 
             )
 
-        # ---------------------------------
+
+        # =================================
         # CONTROLS
-        # ---------------------------------
+        # =================================
 
         painter.setPen(
+
             QColor(
                 180,
                 180,
                 180
             )
+
         )
 
         control_font = QFont()
@@ -979,7 +1122,7 @@ class Environment(QWidget):
 
             30,
 
-            self.height() - 70,
+            self.height() - 95,
 
             "1 → SPACE ENVIRONMENT"
 
@@ -989,9 +1132,19 @@ class Environment(QWidget):
 
             30,
 
-            self.height() - 45,
+            self.height() - 70,
 
             "2 → SKY ENVIRONMENT"
+
+        )
+
+        painter.drawText(
+
+            30,
+
+            self.height() - 45,
+
+            "3 → OCEAN ENVIRONMENT"
 
         )
 
@@ -1014,9 +1167,7 @@ class Environment(QWidget):
 
     def keyPressEvent(self, event):
 
-        # ---------------------------------
         # 1 = SPACE
-        # ---------------------------------
 
         if event.key() == Qt.Key_1:
 
@@ -1024,9 +1175,8 @@ class Environment(QWidget):
 
             self.update()
 
-        # ---------------------------------
+
         # 2 = SKY
-        # ---------------------------------
 
         elif event.key() == Qt.Key_2:
 
@@ -1034,21 +1184,32 @@ class Environment(QWidget):
 
             self.update()
 
-        # ---------------------------------
+
+        # 3 = OCEAN
+
+        elif event.key() == Qt.Key_3:
+
+            self.current_environment = "OCEAN"
+
+            self.update()
+
+
         # SPACE = PAUSE / RESUME
-        # ---------------------------------
 
         elif event.key() == Qt.Key_Space:
 
             self.is_running = (
+
                 not self.is_running
+
             )
 
-        # ---------------------------------
+
         # R = RESET
-        # ---------------------------------
 
         elif event.key() == Qt.Key_R:
+
+            # Reset beacon
 
             self.beacon.x = 300
             self.beacon.y = 200
@@ -1056,21 +1217,31 @@ class Environment(QWidget):
             self.beacon.vx = 2.5
             self.beacon.vy = 1.8
 
+            # Reset camera
+
             self.camera.x = 250
             self.camera.y = 150
 
             self.camera.search_direction = 1
 
+            # Reset vertical direction if available
+
             if hasattr(
+
                 self.camera,
+
                 "search_vertical_direction"
+
             ):
 
                 self.camera.search_vertical_direction = 1
 
+            # Reset simulation state
+
             self.state = "SEARCHING"
 
             self.target_visible = False
+
             self.previous_visible = False
 
             self.error_x = 0.0
@@ -1081,6 +1252,7 @@ class Environment(QWidget):
             self.is_running = True
 
             self.update()
+
 
         else:
 
