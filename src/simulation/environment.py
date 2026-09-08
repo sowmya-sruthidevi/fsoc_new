@@ -1,3 +1,6 @@
+import random
+import math
+
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
@@ -10,6 +13,7 @@ from src.tracking.controller import TrackingController
 class Environment(QWidget):
 
     def __init__(self):
+
         super().__init__()
 
         # ---------------------------------
@@ -17,6 +21,33 @@ class Environment(QWidget):
         # ---------------------------------
 
         self.setMinimumSize(1000, 650)
+
+        # ---------------------------------
+        # SPACE ENVIRONMENT
+        # ---------------------------------
+
+        self.stars = []
+
+        for _ in range(180):
+
+            star = {
+                "x": random.randint(0, 1400),
+                "y": random.randint(0, 900),
+                "size": random.uniform(1, 3),
+                "phase": random.uniform(
+                    0,
+                    math.pi * 2
+                ),
+                "speed": random.uniform(
+                    0.02,
+                    0.08
+                )
+            }
+
+            self.stars.append(star)
+
+        # Animation time
+        self.animation_time = 0.0
 
         # ---------------------------------
         # CREATE BEACON
@@ -71,12 +102,14 @@ class Environment(QWidget):
         # LOCK THRESHOLD
         # ---------------------------------
 
-        # Target is considered locked when
-        # both errors are below this value.
-
         self.lock_threshold = 80.0
-         # Simulation running state
+
+        # ---------------------------------
+        # SIMULATION RUNNING STATE
+        # ---------------------------------
+
         self.is_running = True
+
         # ---------------------------------
         # TIMER
         # ---------------------------------
@@ -92,9 +125,22 @@ class Environment(QWidget):
 
 
     def update_simulation(self):
-           # Pause simulation
+
+        # ---------------------------------
+        # UPDATE ANIMATION
+        # ---------------------------------
+
+        self.animation_time += 0.05
+
+        # ---------------------------------
+        # PAUSE SIMULATION
+        # ---------------------------------
+
         if not self.is_running:
+
+            self.update()
             return
+
         # ---------------------------------
         # MOVE BEACON
         # ---------------------------------
@@ -126,9 +172,8 @@ class Environment(QWidget):
 
             self.state = "ACQUIRED"
 
-            # Show ACQUIRED temporarily
+            # Show acquired temporarily
             self.state_counter = 60
-
 
         # ---------------------------------
         # TARGET LEFT CAMERA FOV
@@ -141,9 +186,8 @@ class Environment(QWidget):
 
             self.state = "LOST"
 
-            # Show LOST temporarily
+            # Show lost temporarily
             self.state_counter = 60
-
 
         # ---------------------------------
         # CAMERA BEHAVIOR
@@ -151,9 +195,7 @@ class Environment(QWidget):
 
         if self.target_visible:
 
-            # ---------------------------------
-            # CALCULATE ERROR
-            # ---------------------------------
+            # Calculate tracking error
 
             self.error_x, self.error_y = (
                 self.camera.calculate_error(
@@ -162,9 +204,7 @@ class Environment(QWidget):
                 )
             )
 
-            # ---------------------------------
-            # CONTROLLER CALCULATES MOVEMENT
-            # ---------------------------------
+            # Controller calculates movement
 
             move_x, move_y = (
                 self.controller.calculate_movement(
@@ -173,9 +213,7 @@ class Environment(QWidget):
                 )
             )
 
-            # ---------------------------------
-            # MOVE CAMERA
-            # ---------------------------------
+            # Move camera
 
             self.camera.move(
                 move_x,
@@ -184,12 +222,9 @@ class Environment(QWidget):
                 self.height()
             )
 
-
         else:
 
-            # ---------------------------------
-            # CAMERA SEARCH MODE
-            # ---------------------------------
+            # Search for beacon
 
             self.camera.search(
                 self.width(),
@@ -198,7 +233,6 @@ class Environment(QWidget):
 
         # ---------------------------------
         # RECALCULATE ERROR
-        # AFTER CAMERA MOVEMENT
         # ---------------------------------
 
         self.error_x, self.error_y = (
@@ -216,37 +250,31 @@ class Environment(QWidget):
 
             self.state_counter -= 1
 
-
         else:
-
-            # ---------------------------------
-            # IF TARGET IS NOT VISIBLE
-            # ---------------------------------
 
             if not self.target_visible:
 
                 self.state = "SEARCHING"
 
-
             else:
 
-                # ---------------------------------
-                # CHECK IF TARGET IS LOCKED
-                # ---------------------------------
+                # Check lock condition
 
                 if (
-                    abs(self.error_x) <= self.lock_threshold
+                    abs(self.error_x)
+                    <= self.lock_threshold
+
                     and
-                    abs(self.error_y) <= self.lock_threshold
+
+                    abs(self.error_y)
+                    <= self.lock_threshold
                 ):
 
                     self.state = "LOCKED"
 
-
                 else:
 
                     self.state = "TRACKING"
-
 
         # ---------------------------------
         # SAVE PREVIOUS VISIBILITY
@@ -268,13 +296,72 @@ class Environment(QWidget):
         painter = QPainter(self)
 
         # ---------------------------------
-        # DRAW BACKGROUND
+        # DRAW SPACE BACKGROUND
         # ---------------------------------
 
         painter.fillRect(
             self.rect(),
-            QColor(15, 20, 35)
+            QColor(5, 8, 20)
         )
+
+        # ---------------------------------
+        # DRAW WHITE BLINKING STARS
+        # ---------------------------------
+
+        painter.setPen(Qt.NoPen)
+
+        for star in self.stars:
+
+            # Calculate blinking brightness
+
+            brightness = (
+                math.sin(
+                    self.animation_time
+                    * star["speed"]
+                    * 20
+
+                    + star["phase"]
+                )
+
+                + 1
+            ) / 2
+
+            # White / light gray stars
+
+            value = int(
+                120
+                + brightness * 135
+            )
+
+            painter.setBrush(
+                QColor(
+                    value,
+                    value,
+                    value
+                )
+            )
+
+            # Slight size variation
+
+            size = (
+                star["size"]
+                * (
+                    0.7
+                    + brightness * 0.6
+                )
+            )
+
+            painter.drawEllipse(
+
+                int(star["x"]),
+
+                int(star["y"]),
+
+                max(1, int(size)),
+
+                max(1, int(size))
+
+            )
 
         # ---------------------------------
         # STATUS COLORS
@@ -296,7 +383,6 @@ class Environment(QWidget):
                 0
             )
 
-
         elif self.state == "ACQUIRED":
 
             status_text = "TARGET ACQUIRED"
@@ -312,7 +398,6 @@ class Environment(QWidget):
                 255,
                 120
             )
-
 
         elif self.state == "TRACKING":
 
@@ -330,12 +415,9 @@ class Environment(QWidget):
                 255
             )
 
-
         elif self.state == "LOCKED":
 
             status_text = "TARGET LOCKED"
-
-            # Purple color for locked
 
             status_color = QColor(
                 180,
@@ -348,7 +430,6 @@ class Environment(QWidget):
                 80,
                 255
             )
-
 
         elif self.state == "LOST":
 
@@ -365,7 +446,6 @@ class Environment(QWidget):
                 70,
                 70
             )
-
 
         else:
 
@@ -402,10 +482,15 @@ class Environment(QWidget):
         )
 
         painter.drawRect(
+
             int(self.camera.x),
+
             int(self.camera.y),
+
             int(self.camera.width),
+
             int(self.camera.height)
+
         )
 
         # ---------------------------------
@@ -417,7 +502,11 @@ class Environment(QWidget):
         )
 
         center_pen = QPen(
-            QColor(0, 200, 255)
+            QColor(
+                0,
+                200,
+                255
+            )
         )
 
         center_pen.setWidth(2)
@@ -429,27 +518,71 @@ class Environment(QWidget):
         # Horizontal crosshair
 
         painter.drawLine(
+
             int(center_x - 20),
+
             int(center_y),
+
             int(center_x + 20),
+
             int(center_y)
+
         )
 
         # Vertical crosshair
 
         painter.drawLine(
+
             int(center_x),
+
             int(center_y - 20),
+
             int(center_x),
+
             int(center_y + 20)
+
         )
 
         # ---------------------------------
-        # DRAW BEACON
+        # DRAW BLINKING BEACON GLOW
         # ---------------------------------
 
+        beacon_pulse = (
+
+            math.sin(
+                self.animation_time * 6
+            )
+
+            + 1
+
+        ) / 2
+
+        # Glow radius changes
+
+        glow_radius = (
+
+            self.beacon.radius
+
+            + 8
+
+            + beacon_pulse * 10
+
+        )
+
+        # Outer red glow
+
         painter.setBrush(
-            QColor(255, 60, 60)
+
+            QColor(
+                255,
+                40,
+                40,
+                int(
+                    50
+                    + beacon_pulse * 100
+                )
+            )
+
         )
 
         painter.setPen(
@@ -457,6 +590,50 @@ class Environment(QWidget):
         )
 
         painter.drawEllipse(
+
+            int(
+                self.beacon.x
+                - glow_radius
+            ),
+
+            int(
+                self.beacon.y
+                - glow_radius
+            ),
+
+            int(
+                glow_radius * 2
+            ),
+
+            int(
+                glow_radius * 2
+            )
+
+        )
+
+        # ---------------------------------
+        # DRAW MAIN BEACON
+        # ---------------------------------
+
+        beacon_red = 255
+
+        beacon_green = int(
+            40
+            + beacon_pulse * 100
+        )
+
+        painter.setBrush(
+
+            QColor(
+                beacon_red,
+                beacon_green,
+                40
+            )
+
+        )
+
+        painter.drawEllipse(
+
             int(
                 self.beacon.x
                 - self.beacon.radius
@@ -474,6 +651,7 @@ class Environment(QWidget):
             int(
                 self.beacon.radius * 2
             )
+
         )
 
         # ---------------------------------
@@ -483,11 +661,13 @@ class Environment(QWidget):
         if self.state == "LOCKED":
 
             lock_pen = QPen(
+
                 QColor(
                     180,
                     80,
                     255
                 )
+
             )
 
             lock_pen.setWidth(2)
@@ -501,7 +681,11 @@ class Environment(QWidget):
             )
 
             box_size = (
-                self.beacon.radius * 2 + 14
+
+                self.beacon.radius * 2
+
+                + 14
+
             )
 
             painter.drawRect(
@@ -519,6 +703,7 @@ class Environment(QWidget):
                 int(box_size),
 
                 int(box_size)
+
             )
 
         # ---------------------------------
@@ -540,9 +725,13 @@ class Environment(QWidget):
         )
 
         painter.drawText(
+
             30,
+
             50,
+
             status_text
+
         )
 
         # ---------------------------------
@@ -550,11 +739,13 @@ class Environment(QWidget):
         # ---------------------------------
 
         painter.setPen(
+
             QColor(
                 220,
                 220,
                 220
             )
+
         )
 
         error_font = QFont()
@@ -568,15 +759,21 @@ class Environment(QWidget):
         error_text = (
 
             f"Error X: {self.error_x:.1f} px"
+
             f"    "
+
             f"Error Y: {self.error_y:.1f} px"
 
         )
 
         painter.drawText(
+
             30,
+
             85,
+
             error_text
+
         )
 
         # ---------------------------------
@@ -586,11 +783,13 @@ class Environment(QWidget):
         if self.state == "LOCKED":
 
             painter.setPen(
+
                 QColor(
                     180,
                     80,
                     255
                 )
+
             )
 
             lock_font = QFont()
@@ -604,55 +803,138 @@ class Environment(QWidget):
             )
 
             painter.drawText(
+
                 30,
+
                 115,
+
                 "LOCK CONDITION: STABLE"
+
             )
 
+        # ---------------------------------
+        # DRAW CONTROL INSTRUCTIONS
+        # ---------------------------------
+
+        painter.setPen(
+            QColor(
+                150,
+                150,
+                150
+            )
+        )
+
+        control_font = QFont()
+
+        control_font.setPointSize(10)
+
+        painter.setFont(
+            control_font
+        )
+
+        painter.drawText(
+
+            30,
+
+            self.height() - 50,
+
+            "SPACE → Pause / Resume"
+
+        )
+
+        painter.drawText(
+
+            30,
+
+            self.height() - 25,
+
+            "R → Reset Simulation"
+
+        )
+
         painter.end()
-        def keyPressEvent(self, event):
-
-                 # SPACE = Pause / Start
-             if event.key() == Qt.Key_Space:
-
-                 self.is_running = not self.is_running
-
-                 if self.is_running:
-                     print("Simulation Started")
-                 else:
-                     print("Simulation Paused")
 
 
-                   # R = Reset simulation
-             elif event.key() == Qt.Key_R:
+    def keyPressEvent(self, event):
 
-                    # Reset beacon
-                  self.beacon.x = 300
-                  self.beacon.y = 200
+        # ---------------------------------
+        # SPACE = PAUSE / RESUME
+        # ---------------------------------
 
-                  # Reset beacon velocity
-                  self.beacon.vx = 1.0
-                  self.beacon.vy = 0.8
+        if event.key() == Qt.Key_Space:
 
-                  # Reset camera
-                  self.camera.x = 250
-                  self.camera.y = 150
+            self.is_running = (
+                not self.is_running
+            )
 
-                    # Reset state
-                  self.state = "SEARCHING"
+            if self.is_running:
 
-                  self.target_visible = False
-                  self.previous_visible = False
+                print(
+                    "Simulation Started"
+                )
 
-                   # Reset error
-                  self.error_x = 0.0
-                  self.error_y = 0.0
+            else:
 
-                  self.state_counter = 0
+                print(
+                    "Simulation Paused"
+                )
 
-                  # Reset running state
-                  self.is_running = True
+        # ---------------------------------
+        # R = RESET SIMULATION
+        # ---------------------------------
 
-                  self.update()
+        elif event.key() == Qt.Key_R:
 
-                  print("Simulation Reset")
+            # Reset beacon position
+
+            self.beacon.x = 300
+            self.beacon.y = 200
+
+            # Reset beacon velocity
+
+            self.beacon.vx = 2.5
+            self.beacon.vy = 1.8
+
+            # Reset camera position
+
+            self.camera.x = 250
+            self.camera.y = 150
+
+            # Reset camera search directions
+
+            self.camera.search_direction = 1
+
+            if hasattr(
+                self.camera,
+                "search_vertical_direction"
+            ):
+
+                self.camera.search_vertical_direction = 1
+
+            # Reset state
+
+            self.state = "SEARCHING"
+
+            self.target_visible = False
+            self.previous_visible = False
+
+            # Reset errors
+
+            self.error_x = 0.0
+            self.error_y = 0.0
+
+            self.state_counter = 0
+
+            # Start simulation
+
+            self.is_running = True
+
+            self.update()
+
+            print(
+                "Simulation Reset"
+            )
+
+        else:
+
+            super().keyPressEvent(event)
