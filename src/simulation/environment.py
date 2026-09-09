@@ -42,8 +42,8 @@ class Environment(QWidget):
         self.menu_bar.setGeometry(0, 0, self.width(), 30)
         self.menu_bar.setStyleSheet("""
             QMenuBar {
-                background-color: #202020;
-                color: #d8d8d8;
+                background-color: #181a1f;
+                color: #d6d9df;
                 padding-left: 8px;
                 border-bottom: 1px solid #3a3a3a;
             }
@@ -52,18 +52,18 @@ class Environment(QWidget):
                 padding: 6px 12px;
             }
             QMenuBar::item:selected {
-                background-color: #3a3a3a;
+                background-color: #2b3038;
             }
             QMenu {
-                background-color: #202020;
-                color: #d8d8d8;
-                border: 1px solid #4a4a4a;
+                background-color: #181a1f;
+                color: #d6d9df;
+                border: 1px solid #3a4049;
             }
             QMenu::item {
                 padding: 7px 28px 7px 18px;
             }
             QMenu::item:selected {
-                background-color: #3a3a3a;
+                background-color: #2b3038;
             }
         """)
 
@@ -259,8 +259,8 @@ class Environment(QWidget):
         self.camera = VirtualCamera(
             x=125,
             y=75,
-            width=350,
-            height=250
+            width=250,
+            height=180
         )
 
         # =================================
@@ -393,7 +393,7 @@ class Environment(QWidget):
         # camera motion by moving a crop/viewport toward the beacon.
         self.video_camera_x = 0.0
         self.video_camera_y = 0.0
-        self.video_crop_ratio = 0.72
+        self.video_crop_ratio = 0.42
         self.video_camera_gain = 0.34
         self.video_target_smooth_x = None
         self.video_target_smooth_y = None
@@ -438,7 +438,7 @@ class Environment(QWidget):
         # simulates pan/tilt by moving a crop over the live frame.
         self.live_camera_x = 0.0
         self.live_camera_y = 0.0
-        self.live_crop_ratio = 0.38
+        self.live_crop_ratio = 0.26
         self.live_camera_gain = 0.62
 
         # =================================
@@ -2034,7 +2034,7 @@ class Environment(QWidget):
 
         if self.state == "LOCKED" and self.target_visible:
             link_text = "OPTICAL LINK: ACTIVE"
-            link_color = QColor(0, 255, 180)
+            link_color = QColor(52, 199, 154)
         elif self.state == "OCCLUDED":
             link_text = "OPTICAL LINK: BLOCKED"
             link_color = QColor(255, 140, 0)
@@ -2073,6 +2073,61 @@ class Environment(QWidget):
         if fill_width > 0:
             painter.setBrush(link_color)
             painter.drawRoundedRect(bar_x, bar_y, fill_width, bar_height, 3, 3)
+
+    # =================================
+    # COMPACT OPTICAL LINK STATUS
+    # =================================
+
+    def draw_mode_optical_link(self, painter, x, y, width, mode):
+        if mode == "VIDEO":
+            found = self.video_target_found
+            confidence = self.video_confidence
+            error_x = self.video_error_x
+            error_y = self.video_error_y
+            locked = self.video_lock
+        else:
+            found = self.live_target_found
+            confidence = self.live_confidence
+            error_x = self.live_error_x
+            error_y = self.live_error_y
+            locked = self.live_lock
+
+        error_mag = math.hypot(error_x, error_y)
+        quality = max(0.0, min(100.0, confidence - error_mag * 0.10))
+
+        if locked and found:
+            label = "OPTICAL LINK: ACTIVE"
+            color = QColor(52, 199, 154)
+        elif found:
+            label = "OPTICAL LINK: ALIGNING"
+            color = QColor(230, 190, 70)
+        else:
+            label = "OPTICAL LINK: OFFLINE"
+            color = QColor(210, 90, 90)
+
+        h = 42
+        painter.setPen(QPen(QColor(75, 105, 135), 1))
+        painter.setBrush(QColor(20, 26, 34))
+        painter.drawRoundedRect(x, y, width, h, 8, 8)
+
+        painter.setFont(QFont("Arial", 8, QFont.Bold))
+        painter.setPen(color)
+        painter.drawText(x + 12, y + 15, label)
+
+        painter.setFont(QFont("Arial", 8, QFont.Bold))
+        painter.setPen(QColor(210, 220, 230))
+        painter.drawText(x + 12, y + 33, f"QUALITY {quality:.0f}%")
+
+        bar_x = x + 86
+        bar_y = y + 25
+        bar_w = max(70, width - 100)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(55, 65, 78))
+        painter.drawRoundedRect(bar_x, bar_y, bar_w, 7, 3, 3)
+        fill_w = int(bar_w * quality / 100.0)
+        if fill_w > 0:
+            painter.setBrush(color)
+            painter.drawRoundedRect(bar_x, bar_y, fill_w, 7, 3, 3)
 
     # =================================
     # RIGHT-SIDE METRIC GRAPHS
@@ -2154,7 +2209,7 @@ class Environment(QWidget):
 
             painter.setPen(
                 QPen(
-                    QColor(0, 255, 180),
+                    QColor(52, 199, 154),
                     2
                 )
             )
@@ -2281,7 +2336,7 @@ class Environment(QWidget):
 
         draw_error_line(
             self.error_x_history,
-            QColor(0, 220, 255)
+            QColor(74, 144, 226)
         )
 
         draw_error_line(
@@ -2291,7 +2346,7 @@ class Environment(QWidget):
 
         painter.setFont(graph_font)
 
-        painter.setPen(QColor(0, 220, 255))
+        painter.setPen(QColor(74, 144, 226))
         painter.drawText(
             graph_x + 12,
             error_y + error_height - 8,
@@ -2326,9 +2381,9 @@ class Environment(QWidget):
             else:
                 title = "LIVE TRACKING MODE"
 
-            painter.setPen(QColor(0, 220, 255))
-            painter.setFont(QFont("Arial", 18, QFont.Bold))
-            painter.drawText(20, 82, title)
+            painter.setPen(QColor(74, 144, 226))
+            painter.setFont(QFont("Arial", 17, QFont.Bold))
+            painter.drawText(20, 86, title)
 
             if self.operating_mode == "VIDEO" and self.video_frame is not None:
                 # ---------------------------------------------------------
@@ -2338,9 +2393,9 @@ class Environment(QWidget):
                 margin = 20
                 top = 105
                 panel_w = 285
-                gap = 18
-                source_w = 330
-                source_h = min(270, max(190, self.height() - 120))
+                gap = 16
+                source_w = 270
+                source_h = min(240, max(180, self.height() - 125))
                 view_x = margin + source_w + gap
                 panel_x = self.width() - panel_w - margin
                 view_w = max(420, panel_x - gap - view_x)
@@ -2373,14 +2428,14 @@ class Environment(QWidget):
                 cam_rect_y = source_y + crop_y * src_scale_y
                 cam_rect_w = crop_w * src_scale_x
                 cam_rect_h = crop_h * src_scale_y
-                painter.setPen(QPen(QColor(0, 255, 120), 3))
+                painter.setPen(QPen(QColor(52, 199, 89), 2))
                 painter.drawRect(int(cam_rect_x), int(cam_rect_y), int(cam_rect_w), int(cam_rect_h))
 
                 # Beacon position in the world view.
                 if self.video_target_found:
                     wx = source_x + self.video_target_x * src_scale_x
                     wy = source_y + self.video_target_y * src_scale_y
-                    painter.setPen(QPen(QColor(0, 255, 120), 2))
+                    painter.setPen(QPen(QColor(52, 199, 89), 2))
                     painter.drawEllipse(int(wx - 7), int(wy - 7), 14, 14)
 
                 # Large moving camera view.
@@ -2389,7 +2444,7 @@ class Environment(QWidget):
                     view_w, view_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
                 painter.drawImage(view_x, top, image)
-                painter.setPen(QPen(QColor(0, 255, 120), 3))
+                painter.setPen(QPen(QColor(52, 199, 89), 2))
                 painter.drawRect(view_x, top, image.width(), image.height())
 
                 sx = image.width() / max(1, crop_w)
@@ -2406,7 +2461,7 @@ class Environment(QWidget):
                 if self.video_target_found:
                     tx = view_x + (self.video_target_x - crop_x) * sx
                     ty = top + (self.video_target_y - crop_y) * sy
-                    painter.setPen(QPen(QColor(0, 255, 120), 3))
+                    painter.setPen(QPen(QColor(52, 199, 89), 2))
                     painter.drawEllipse(int(tx - 11), int(ty - 11), 22, 22)
                     painter.drawLine(int(cx), int(cy), int(tx), int(ty))
                     painter.setFont(QFont("Arial", 10, QFont.Bold))
@@ -2415,7 +2470,7 @@ class Environment(QWidget):
                 # Make the camera motion obvious to the user.
                 pan_x = self.video_error_x
                 pan_y = self.video_error_y
-                painter.setPen(QColor(0, 220, 255))
+                painter.setPen(QColor(74, 144, 226))
                 painter.setFont(QFont("Arial", 10, QFont.Bold))
                 direction = "CENTERED"
                 if abs(pan_x) > 8:
@@ -2444,22 +2499,28 @@ class Environment(QWidget):
                 if self.video_path:
                     painter.drawText(panel_x + 15, top + 226, self.video_path.split('/')[-1][-34:])
 
+                # Optical-link status.
+                link_y = top + metrics_h + 10
+                self.draw_mode_optical_link(
+                    painter, panel_x, link_y, panel_w, "VIDEO"
+                )
+
                 # Video Upload performance graphs.
-                graph_y = top + metrics_h + 18
-                graph_h = 118
+                graph_y = link_y + 54
+                graph_h = 112
 
                 def draw_video_graph(x, y, w, h, title_text, history, ymin, ymax, line_color):
-                    painter.fillRect(x, y, w, h, QColor(18, 24, 35))
-                    painter.setPen(QPen(QColor(55, 80, 105), 1))
+                    painter.fillRect(x, y, w, h, QColor(18, 18, 18))
+                    painter.setPen(QPen(QColor(58, 68, 82), 1))
                     painter.drawRect(x, y, w, h)
-                    painter.setPen(QColor(0, 220, 255))
+                    painter.setPen(QColor(74, 144, 226))
                     painter.setFont(QFont("Arial", 10, QFont.Bold))
                     painter.drawText(x + 12, y + 20, title_text)
                     left = x + 12
                     right = x + w - 12
                     top_p = y + 32
                     bottom = y + h - 12
-                    painter.setPen(QPen(QColor(45, 55, 70), 1))
+                    painter.setPen(QPen(QColor(43, 49, 59), 1))
                     painter.drawLine(left, bottom, right, bottom)
                     if ymin < 0 < ymax:
                         zero_y = bottom - ((0 - ymin) / (ymax - ymin)) * (bottom - top_p)
@@ -2478,19 +2539,19 @@ class Environment(QWidget):
 
                 draw_video_graph(panel_x, graph_y, panel_w, graph_h,
                                  "CONFIDENCE (%)", self.video_confidence_history,
-                                 0, 100, QColor(0, 255, 180))
+                                 0, 100, QColor(52, 199, 154))
 
                 error_graph_y = graph_y + graph_h + 14
                 draw_video_graph(panel_x, error_graph_y, panel_w, graph_h,
                                  "TRACKING ERROR (X / Y)", self.video_error_x_history,
-                                 -300, 300, QColor(0, 220, 255))
+                                 -300, 300, QColor(74, 144, 226))
 
                 if len(self.video_error_y_history) >= 2:
                     left = panel_x + 12
                     right = panel_x + panel_w - 12
                     top_p = error_graph_y + 32
                     bottom = error_graph_y + graph_h - 12
-                    painter.setPen(QPen(QColor(255, 190, 40), 2))
+                    painter.setPen(QPen(QColor(220, 160, 55), 2))
                     points = []
                     for i, value in enumerate(self.video_error_y_history):
                         px = left + (i / max(1, len(self.video_error_y_history) - 1)) * (right - left)
@@ -2518,7 +2579,7 @@ class Environment(QWidget):
                 panel_w = 285
                 panel_h = 255
                 painter.fillRect(panel_x, panel_y, panel_w, panel_h, QColor(28, 28, 28))
-                painter.setPen(QColor(0, 220, 255))
+                painter.setPen(QColor(74, 144, 226))
                 painter.setFont(QFont("Arial", 11, QFont.Bold))
                 painter.drawText(panel_x + 15, panel_y + 26, "VIDEO TRACKING METRICS")
                 painter.setPen(QColor(210, 210, 210))
@@ -2537,13 +2598,13 @@ class Environment(QWidget):
                 graph_h = 118
                 for gy, title_text in ((graph_y, "CONFIDENCE (%)"),
                                        (graph_y + graph_h + 14, "TRACKING ERROR (X / Y)")):
-                    painter.fillRect(panel_x, gy, panel_w, graph_h, QColor(18, 24, 35))
-                    painter.setPen(QPen(QColor(55, 80, 105), 1))
+                    painter.fillRect(panel_x, gy, panel_w, graph_h, QColor(24, 29, 36))
+                    painter.setPen(QPen(QColor(58, 68, 82), 1))
                     painter.drawRect(panel_x, gy, panel_w, graph_h)
-                    painter.setPen(QColor(0, 220, 255))
+                    painter.setPen(QColor(74, 144, 226))
                     painter.setFont(QFont("Arial", 10, QFont.Bold))
                     painter.drawText(panel_x + 12, gy + 20, title_text)
-                    painter.setPen(QPen(QColor(45, 55, 70), 1))
+                    painter.setPen(QPen(QColor(43, 49, 59), 1))
                     painter.drawLine(panel_x + 12, gy + graph_h - 12, panel_x + panel_w - 12, gy + graph_h - 12)
 
             else:
@@ -2607,13 +2668,13 @@ class Environment(QWidget):
                     camera_box_y = source_y + crop_y * sy0
                     camera_box_w = max(3, int(crop_w * sx0))
                     camera_box_h = max(3, int(crop_h * sy0))
-                    painter.setPen(QPen(QColor(0, 255, 120), 3))
+                    painter.setPen(QPen(QColor(52, 199, 89), 2))
                     painter.drawRect(
                         int(camera_box_x), int(camera_box_y),
                         camera_box_w, camera_box_h
                     )
 
-                    painter.setPen(QColor(0, 255, 120))
+                    painter.setPen(QColor(52, 199, 89))
                     painter.setFont(QFont("Arial", 9, QFont.Bold))
                     painter.drawText(
                         int(camera_box_x + 6),
@@ -2625,7 +2686,7 @@ class Environment(QWidget):
                     if self.live_target_found:
                         wx = source_x + self.live_target_x * sx0
                         wy = source_y + self.live_target_y * sy0
-                        painter.setPen(QPen(QColor(0, 255, 120), 3))
+                        painter.setPen(QPen(QColor(52, 199, 89), 2))
                         painter.drawEllipse(int(wx - 8), int(wy - 8), 16, 16)
                         painter.drawLine(
                             int(wx - 13), int(wy), int(wx + 13), int(wy)
@@ -2647,7 +2708,7 @@ class Environment(QWidget):
                     )
                     painter.drawImage(view_x, top, image)
 
-                    painter.setPen(QPen(QColor(0, 255, 120), 3))
+                    painter.setPen(QPen(QColor(52, 199, 89), 2))
                     painter.drawRect(
                         view_x, top, image.width(), image.height()
                     )
@@ -2673,7 +2734,7 @@ class Environment(QWidget):
                             else "PAN UP"
                         )
 
-                    painter.setPen(QColor(0, 220, 255))
+                    painter.setPen(QColor(74, 144, 226))
                     painter.setFont(QFont("Arial", 13, QFont.Bold))
                     painter.drawText(
                         view_x + 14, top + 25,
@@ -2695,7 +2756,7 @@ class Environment(QWidget):
                     if self.live_target_found:
                         tx = view_x + (self.live_target_x - crop_x) * sx
                         ty = top + (self.live_target_y - crop_y) * sy
-                        painter.setPen(QPen(QColor(0, 255, 120), 3))
+                        painter.setPen(QPen(QColor(52, 199, 89), 2))
                         painter.drawEllipse(int(tx - 13), int(ty - 13), 26, 26)
                         painter.drawLine(int(cx), int(cy), int(tx), int(ty))
                         painter.setFont(QFont("Arial", 11, QFont.Bold))
@@ -2714,7 +2775,7 @@ class Environment(QWidget):
                 painter.fillRect(
                     panel_x, top, panel_w, 275, QColor(28, 28, 28)
                 )
-                painter.setPen(QColor(0, 220, 255))
+                painter.setPen(QColor(74, 144, 226))
                 painter.setFont(QFont("Arial", 12, QFont.Bold))
                 painter.drawText(
                     panel_x + 15, top + 28,
@@ -2750,27 +2811,33 @@ class Environment(QWidget):
                     else "Webcam: STOPPED"
                 )
 
+                # Optical-link status.
+                link_y = top + 282
+                self.draw_mode_optical_link(
+                    painter, panel_x, link_y, panel_w, "LIVE"
+                )
+
                 # Live performance graphs.
-                graph_y = top + 295
-                graph_h = 125
+                graph_y = link_y + 54
+                graph_h = 112
 
                 def draw_graph(x, y, w, h, title, history, ymin, ymax):
-                    painter.fillRect(x, y, w, h, QColor(18, 24, 35))
-                    painter.setPen(QPen(QColor(55, 80, 105), 1))
+                    painter.fillRect(x, y, w, h, QColor(18, 18, 18))
+                    painter.setPen(QPen(QColor(58, 68, 82), 1))
                     painter.drawRect(x, y, w, h)
-                    painter.setPen(QColor(0, 220, 255))
+                    painter.setPen(QColor(74, 144, 226))
                     painter.setFont(QFont("Arial", 10, QFont.Bold))
                     painter.drawText(x + 12, y + 20, title)
                     left, right = x + 12, x + w - 12
                     top_p, bottom = y + 32, y + h - 12
-                    painter.setPen(QPen(QColor(45, 55, 70), 1))
+                    painter.setPen(QPen(QColor(43, 49, 59), 1))
                     painter.drawLine(left, bottom, right, bottom)
                     if ymin < 0 < ymax:
                         zy = bottom - ((0 - ymin) / (ymax - ymin)) * (bottom - top_p)
                         painter.drawLine(left, int(zy), right, int(zy))
                     if len(history) < 2:
                         return
-                    painter.setPen(QPen(QColor(0, 255, 180), 2))
+                    painter.setPen(QPen(QColor(52, 199, 154), 2))
                     points = []
                     for i, value in enumerate(history):
                         px = left + (i / max(1, len(history) - 1)) * (right - left)
@@ -2781,12 +2848,12 @@ class Environment(QWidget):
                         painter.drawLine(points[i-1][0], points[i-1][1], points[i][0], points[i][1])
 
                 draw_graph(panel_x, graph_y, panel_w, graph_h, "CONFIDENCE (%)", self.live_confidence_history, 0, 100)
-                draw_graph(panel_x, graph_y + graph_h + 12, panel_w, graph_h, "TRACKING ERROR (X / Y)", self.live_error_x_history, -300, 300)
+                draw_graph(panel_x, graph_y + graph_h + 10, panel_w, graph_h, "TRACKING ERROR (X / Y)", self.live_error_x_history, -300, 300)
 
                 if len(self.live_error_y_history) >= 2:
                     x0, x1 = panel_x + 12, panel_x + panel_w - 12
-                    y0, y1 = graph_y + graph_h + 12 + 32, graph_y + graph_h + 12 + graph_h - 12
-                    painter.setPen(QPen(QColor(255, 190, 40), 2))
+                    y0, y1 = graph_y + graph_h + 10 + 32, graph_y + graph_h + 10 + graph_h - 12
+                    painter.setPen(QPen(QColor(220, 160, 55), 2))
                     points = []
                     for i, value in enumerate(self.live_error_y_history):
                         px = x0 + (i / max(1, len(self.live_error_y_history) - 1)) * (x1 - x0)
@@ -3657,6 +3724,13 @@ class Environment(QWidget):
                 panel_y + 255,
                 mode_label + " / " + self.disturbance_strength_name
             )
+
+        # =================================
+        # RIGHT-SIDE PERFORMANCE GRAPHS
+        # =================================
+        # Always show the core graphs. They are independent of whether
+        # disturbance mode is enabled.
+        self.draw_graphs(painter)
 
         # =================================
         # DISTURBANCE PERFORMANCE PANEL
