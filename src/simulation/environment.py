@@ -118,6 +118,28 @@ class Environment(QWidget):
         )
         disturbance_menu.addAction(no_disturbance_action)
 
+        disturbance_menu.addSeparator()
+
+        strength_menu = disturbance_menu.addMenu("Disturbance Strength")
+
+        low_strength_action = QAction("Low", self)
+        low_strength_action.triggered.connect(
+            lambda: self.set_disturbance_strength("LOW")
+        )
+        strength_menu.addAction(low_strength_action)
+
+        medium_strength_action = QAction("Medium", self)
+        medium_strength_action.triggered.connect(
+            lambda: self.set_disturbance_strength("MEDIUM")
+        )
+        strength_menu.addAction(medium_strength_action)
+
+        high_strength_action = QAction("High", self)
+        high_strength_action.triggered.connect(
+            lambda: self.set_disturbance_strength("HIGH")
+        )
+        strength_menu.addAction(high_strength_action)
+
         controls_action = QAction("Keyboard Controls", self)
         controls_action.triggered.connect(self.show_controls)
         help_menu.addAction(controls_action)
@@ -283,7 +305,16 @@ class Environment(QWidget):
         self.disturbances_enabled = True
 
         # Strong enough to be clearly visible in the simulation.
-        self.disturbance_strength = 3.0
+        self.disturbance_strength = 1.5
+        self.disturbance_strength_name = "MEDIUM"
+
+        # =================================
+        # DISTURBANCE PERFORMANCE METRICS
+        # =================================
+
+        self.disturbance_peak_error = 0.0
+        self.disturbance_event_count = 0
+        self.disturbance_event_active = False
 
         # Fixed target position used by camera-disturbance tests.
         self.disturbance_beacon_x = self.beacon.x
@@ -333,6 +364,23 @@ class Environment(QWidget):
         self.setFocus()
         self.update()
 
+    def set_disturbance_strength(self, strength):
+        strength_values = {
+            "LOW": 0.6,
+            "MEDIUM": 1.5,
+            "HIGH": 3.0
+        }
+
+        self.disturbance_strength_name = strength
+        self.disturbance_strength = strength_values.get(
+            strength,
+            1.5
+        )
+
+        self.setFocus()
+        self.update()
+
+
     def toggle_disturbances(self):
         # Keep the old D shortcut working.
         if self.disturbances_enabled:
@@ -370,6 +418,11 @@ class Environment(QWidget):
         self.lock_counter = 0
         self.disturbance_mode = "CAMERA"
         self.disturbances_enabled = True
+        self.disturbance_strength = 1.5
+        self.disturbance_strength_name = "MEDIUM"
+        self.disturbance_peak_error = 0.0
+        self.disturbance_event_count = 0
+        self.disturbance_event_active = False
         self.disturbance_beacon_x = self.beacon.x
         self.disturbance_beacon_y = self.beacon.y
 
@@ -849,6 +902,29 @@ class Environment(QWidget):
         else:
 
             self.confidence = 0.0
+
+        # =================================
+        # DISTURBANCE PERFORMANCE METRICS
+        # =================================
+
+        if self.disturbances_enabled:
+
+            self.disturbance_peak_error = max(
+                self.disturbance_peak_error,
+                distance_error
+            )
+
+            disturbance_trigger = self.lock_threshold * 2.0
+
+            if distance_error > disturbance_trigger:
+
+                if not self.disturbance_event_active:
+                    self.disturbance_event_count += 1
+                    self.disturbance_event_active = True
+
+            elif distance_error <= self.lock_threshold:
+
+                self.disturbance_event_active = False
 
         # =================================
         # UPDATE GRAPH HISTORY
@@ -2406,14 +2482,72 @@ class Environment(QWidget):
             "OFF": "OFF"
         }.get(self.disturbance_mode, "OFF")
 
+        strength_label = (
+            self.disturbance_strength_name
+            if self.disturbances_enabled
+            else "OFF"
+        )
+
         painter.drawText(
 
             panel_x + 110,
 
             panel_y + 255,
 
-            mode_label
+            mode_label + " / " + strength_label
 
+        )
+
+        # =================================
+        # DISTURBANCE PERFORMANCE PANEL
+        # =================================
+
+        performance_x = self.width() - 300
+        performance_y = 665
+        performance_width = 260
+        performance_height = 82
+
+        painter.setPen(
+            QPen(QColor(70, 150, 220), 1)
+        )
+        painter.setBrush(
+            QColor(8, 16, 30, 235)
+        )
+
+        painter.drawRoundedRect(
+            performance_x,
+            performance_y,
+            performance_width,
+            performance_height,
+            10,
+            10
+        )
+
+        performance_font = QFont()
+        performance_font.setPointSize(10)
+        performance_font.setBold(True)
+        painter.setFont(performance_font)
+        painter.setPen(QColor(90, 190, 255))
+        painter.drawText(
+            performance_x + 12,
+            performance_y + 20,
+            "DISTURBANCE RESPONSE"
+        )
+
+        normal_font = QFont()
+        normal_font.setPointSize(9)
+        normal_font.setBold(False)
+        painter.setFont(normal_font)
+        painter.setPen(QColor(220, 220, 220))
+        painter.drawText(
+            performance_x + 12,
+            performance_y + 45,
+            f"Peak Error: {self.disturbance_peak_error:.1f} px"
+        )
+        painter.drawText(
+            performance_x + 12,
+            performance_y + 66,
+            f"Events: {self.disturbance_event_count}"
         )
 
         # =================================
@@ -2580,6 +2714,22 @@ class Environment(QWidget):
         elif event.key() == Qt.Key_N:
 
             self.set_disturbance_mode("OFF")
+
+        # =================================
+        # DISTURBANCE STRENGTH
+        # =================================
+
+        elif event.key() == Qt.Key_L:
+
+            self.set_disturbance_strength("LOW")
+
+        elif event.key() == Qt.Key_M:
+
+            self.set_disturbance_strength("MEDIUM")
+
+        elif event.key() == Qt.Key_H:
+
+            self.set_disturbance_strength("HIGH")
 
         # =================================
         # RESET
