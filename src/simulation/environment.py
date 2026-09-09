@@ -1090,6 +1090,67 @@ class Environment(QWidget):
 
 
     # =================================
+    # FSOC LINK QUALITY
+    # =================================
+
+    def draw_link_quality(self, painter):
+
+        panel_x = self.width() - 300
+        panel_y = 315
+        panel_width = 260
+        panel_height = 38
+
+        # Simulated link quality derived from the existing tracking metrics.
+        # It is not a physical RF/optical link measurement.
+        if self.target_visible:
+            error_magnitude = math.hypot(self.error_x, self.error_y)
+            quality = max(0.0, min(100.0, self.confidence - error_magnitude * 0.12))
+        else:
+            quality = 0.0
+
+        if self.state == "LOCKED" and self.target_visible:
+            link_text = "OPTICAL LINK: ACTIVE"
+            link_color = QColor(0, 255, 180)
+        elif self.state == "OCCLUDED":
+            link_text = "OPTICAL LINK: BLOCKED"
+            link_color = QColor(255, 140, 0)
+        elif self.target_visible:
+            link_text = "OPTICAL LINK: ALIGNING"
+            link_color = QColor(255, 210, 0)
+        else:
+            link_text = "OPTICAL LINK: OFFLINE"
+            link_color = QColor(255, 80, 80)
+
+        painter.setPen(QPen(QColor(100, 180, 255, 180), 2))
+        painter.setBrush(QColor(10, 20, 35, 210))
+        painter.drawRoundedRect(panel_x, panel_y, panel_width, panel_height, 10, 10)
+
+        font = QFont()
+        font.setPointSize(8)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(link_color)
+        painter.drawText(panel_x + 12, panel_y + 15, link_text)
+
+        # Quality percentage and progress bar.
+        painter.setPen(QColor(220, 230, 240))
+        painter.drawText(panel_x + 12, panel_y + 31, f"QUALITY {quality:.0f}%")
+
+        bar_x = panel_x + 100
+        bar_y = panel_y + 22
+        bar_width = 145
+        bar_height = 7
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(55, 65, 80))
+        painter.drawRoundedRect(bar_x, bar_y, bar_width, bar_height, 3, 3)
+
+        fill_width = int(bar_width * quality / 100.0)
+        if fill_width > 0:
+            painter.setBrush(link_color)
+            painter.drawRoundedRect(bar_x, bar_y, fill_width, bar_height, 3, 3)
+
+    # =================================
     # RIGHT-SIDE METRIC GRAPHS
     # =================================
 
@@ -1098,11 +1159,15 @@ class Environment(QWidget):
         graph_x = self.width() - 300
         graph_width = 260
 
-        confidence_y = 320
-        confidence_height = 100
+        # Compact link-quality card occupies the small space between
+        # SYSTEM METRICS and the graphs.
+        self.draw_link_quality(painter)
 
-        error_y = 430
-        error_height = 120
+        confidence_y = 365
+        confidence_height = 95
+
+        error_y = 470
+        error_height = 115
 
         # =================================
         # CONFIDENCE GRAPH
@@ -1577,6 +1642,108 @@ class Environment(QWidget):
                 self.animation_time
 
             )
+
+        # =================================
+        # ALIGNMENT VECTOR
+        # =================================
+        # Shows the pointing error from the camera center to the target.
+        # This is a visual representation of the same Error X / Error Y
+        # values shown in SYSTEM METRICS.
+
+        if self.state in (
+            "ACQUIRED",
+            "TRACKING",
+            "LOCKING",
+            "LOCKED"
+        ):
+
+            vector_pen = QPen(
+                QColor(0, 220, 255, 170)
+            )
+            vector_pen.setWidth(2)
+            painter.setPen(vector_pen)
+
+            painter.drawLine(
+                int(center_x),
+                int(center_y),
+                int(self.beacon.x),
+                int(self.beacon.y)
+            )
+
+            # Small arrow head showing the direction of correction.
+            dx = self.beacon.x - center_x
+            dy = self.beacon.y - center_y
+            distance = math.hypot(dx, dy)
+
+            if distance > 8:
+                ux = dx / distance
+                uy = dy / distance
+                px = -uy
+                py = ux
+                arrow_size = 8
+
+                tip_x = self.beacon.x
+                tip_y = self.beacon.y
+                base_x = tip_x - ux * arrow_size
+                base_y = tip_y - uy * arrow_size
+
+                painter.drawLine(
+                    int(tip_x),
+                    int(tip_y),
+                    int(base_x + px * 4),
+                    int(base_y + py * 4)
+                )
+                painter.drawLine(
+                    int(tip_x),
+                    int(tip_y),
+                    int(base_x - px * 4),
+                    int(base_y - py * 4)
+                )
+
+        # =================================
+        # FSOC COMMUNICATION BEAM
+        # =================================
+        # Shows the optical communication link only after
+        # the terminal achieves a stable lock.
+
+        if self.state == "LOCKED" and self.target_visible:
+
+            beam_dx = self.beacon.x - center_x
+            beam_dy = self.beacon.y - center_y
+            beam_length = math.hypot(beam_dx, beam_dy)
+
+            if beam_length > 1:
+
+                # Subtle pulsing effect to indicate an active optical link.
+                pulse = (math.sin(self.animation_time * 8.0) + 1.0) / 2.0
+                beam_alpha = int(70 + pulse * 70)
+
+                beam_pen = QPen(
+                    QColor(0, 255, 210, beam_alpha)
+                )
+                beam_pen.setWidth(7)
+                painter.setPen(beam_pen)
+
+                painter.drawLine(
+                    int(center_x),
+                    int(center_y),
+                    int(self.beacon.x),
+                    int(self.beacon.y)
+                )
+
+                # Bright optical core.
+                core_pen = QPen(
+                    QColor(180, 255, 245, 210)
+                )
+                core_pen.setWidth(2)
+                painter.setPen(core_pen)
+
+                painter.drawLine(
+                    int(center_x),
+                    int(center_y),
+                    int(self.beacon.x),
+                    int(self.beacon.y)
+                )
 
         # =================================
         # LOCK BOX
