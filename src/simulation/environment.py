@@ -83,11 +83,6 @@ class Environment(QWidget):
         mode_menu.addAction(virtual_mode_action)
 
         video_upload_menu = mode_menu.addMenu("Video Upload")
-        video_mode_action = QAction("Tracking Mode", self)
-        video_mode_action.triggered.connect(
-            lambda: self.set_operating_mode("VIDEO")
-        )
-        video_upload_menu.addAction(video_mode_action)
 
         video_upload_action = QAction("Open Video File", self)
         video_upload_action.triggered.connect(self.open_video_file)
@@ -406,6 +401,11 @@ class Environment(QWidget):
         self.video_last_seen_y = None
         self.video_missing_frames = 0
 
+        # Video tracking performance history.
+        self.video_confidence_history = []
+        self.video_error_x_history = []
+        self.video_error_y_history = []
+
         # =================================
         # LIVE CAMERA TRACKING
         # =================================
@@ -428,13 +428,18 @@ class Environment(QWidget):
         self.live_last_seen_y = None
         self.live_missing_frames = 0
 
+        # Live tracking performance history.
+        self.live_confidence_history = []
+        self.live_error_x_history = []
+        self.live_error_y_history = []
+
         # Virtual camera viewport for live tracking.
         # The physical webcam cannot pan programmatically, so the UI
         # simulates pan/tilt by moving a crop over the live frame.
         self.live_camera_x = 0.0
         self.live_camera_y = 0.0
-        self.live_crop_ratio = 0.52
-        self.live_camera_gain = 0.38
+        self.live_crop_ratio = 0.38
+        self.live_camera_gain = 0.62
 
         # =================================
         # TIMER
@@ -525,6 +530,9 @@ class Environment(QWidget):
         self.video_last_seen_x = None
         self.video_last_seen_y = None
         self.video_missing_frames = 0
+        self.video_confidence_history.clear()
+        self.video_error_x_history.clear()
+        self.video_error_y_history.clear()
 
         # Start the virtual camera at the uploaded video's center.
         self.video_camera_x = self.video_frame_width / 2.0 if self.video_frame_width else 0.0
@@ -566,6 +574,9 @@ class Environment(QWidget):
         self.live_last_seen_x = None
         self.live_last_seen_y = None
         self.live_missing_frames = 0
+        self.live_confidence_history.clear()
+        self.live_error_x_history.clear()
+        self.live_error_y_history.clear()
         self.live_camera_x = 0.0
         self.live_camera_y = 0.0
         self.state = "SEARCHING"
@@ -577,6 +588,9 @@ class Environment(QWidget):
             self.live_capture = None
         self.live_frame = None
         self.live_frame_rgb = None
+        self.live_confidence_history.clear()
+        self.live_error_x_history.clear()
+        self.live_error_y_history.clear()
         self.operating_mode = "LIVE"
         self.is_running = False
         self.live_target_found = False
@@ -605,15 +619,19 @@ class Environment(QWidget):
 
         # -------------------------------------------------------------
         # BEACON DETECTION
-        # Look for a compact, extremely bright optical source.
-        # This is more reliable for a phone/flashlight beacon than
-        # selecting any generally bright object in the room.
+        # Detect a compact, saturated optical point rather than general
+        # bright areas such as faces, walls or reflections.
         # -------------------------------------------------------------
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
-        threshold_value = 245
+        # Use a very high threshold for an optical beacon.  A second
+        # adaptive threshold catches slightly dimmer frames without
+        # allowing ordinary room lighting to dominate.
+        peak_gray = float(gray.max())
+        threshold_value = 250 if peak_gray >= 252 else 245
         _, thresh = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
@@ -628,41 +646,69 @@ class Environment(QWidget):
 
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < 2 or area > frame_area * 0.12:
+            if area < 1.0 or area > frame_area * 0.025:
                 continue
 
             x, y, w, h = cv2.boundingRect(contour)
-            if w > self.live_frame_width * 0.30 or h > self.live_frame_height * 0.30:
+            if w < 1 or h < 1:
+                continue
+            if w > self.live_frame_width * 0.12 or h > self.live_frame_height * 0.12:
                 continue
 
-            roi = gray[y:y+h, x:x+w]
-            if roi.size == 0:
+            roi_gray = gray[y:y+h, x:x+w]
+            roi_bgr = frame[y:y+h, x:x+w]
+            if roi_gray.size == 0 or roi_bgr.size == 0:
                 continue
 
-            peak = float(roi.max())
-            mean_brightness = float(roi.mean())
+            peak = float(roi_gray.max())
+            mean_brightness = float(roi_gray.mean())
+            min_channel = float(roi_bgr.min(axis=2).mean())
+            max_channel = float(roi_bgr.max(axis=2).mean())
+            white_ratio = min_channel / max(1.0, max_channel)
+
+            # A real optical beacon is usually a small, intense white
+            # source. Reject candidates that are large/soft or strongly
+            # colored.
             compactness = area / max(1.0, float(w * h))
+            perimeter = cv2.arcLength(contour, True)
+            circularity = (4.0 * math.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
 
-            # Optical beacon candidates should be very bright and compact.
-            score = peak * (0.55 + 0.45 * min(1.0, mean_brightness / 255.0))
-            score *= (0.55 + 0.45 * min(1.0, compactness * 2.0))
-            score *= math.sqrt(max(1.0, area))
+            if peak < 245 or white_ratio < 0.68:
+                continue
+
+            # Estimate local contrast against a small surrounding ring.
+            pad = max(3, int(max(w, h) * 2))
+            x0, y0 = max(0, x - pad), max(0, y - pad)
+            x1 = min(self.live_frame_width, x + w + pad)
+            y1 = min(self.live_frame_height, y + h + pad)
+            surround = gray[y0:y1, x0:x1]
+            local_mean = float(surround.mean()) if surround.size else 0.0
+            contrast = max(0.0, peak - local_mean)
+
+            score = (
+                peak * 0.35
+                + min(255.0, contrast) * 0.35
+                + min(255.0, mean_brightness) * 0.10
+                + white_ratio * 100.0 * 0.10
+                + min(1.0, compactness * 2.0) * 100.0 * 0.05
+                + min(1.0, circularity * 2.0) * 100.0 * 0.05
+            )
 
             if ref_x is not None and ref_y is not None:
                 cx0, cy0 = x + w / 2.0, y + h / 2.0
                 jump = math.hypot(cx0 - ref_x, cy0 - ref_y)
-                max_jump = max(45.0, min(self.live_frame_width, self.live_frame_height) * 0.35)
+                max_jump = max(55.0, min(self.live_frame_width, self.live_frame_height) * 0.28)
                 proximity = math.exp(-jump / max_jump)
-                score *= 0.25 + 0.75 * proximity
+                score *= 0.18 + 0.82 * proximity
 
             if score > best_score:
                 best_score = score
-                best = (x, y, w, h, area)
+                best = (x, y, w, h, area, contrast, white_ratio)
 
         self.live_target_found = best is not None
 
         if best is not None:
-            x, y, w, h, area = best
+            x, y, w, h, area, beacon_contrast, beacon_white_ratio = best
             raw_x = x + w / 2.0
             raw_y = y + h / 2.0
 
@@ -714,8 +760,11 @@ class Environment(QWidget):
             self.live_error_y = self.live_target_y - self.live_camera_y
             distance = math.hypot(self.live_error_x, self.live_error_y)
 
-            # Confidence combines beacon brightness/size and alignment.
-            area_conf = min(1.0, area / max(10.0, frame_area * 0.0008))
+            # Confidence combines beacon quality and alignment.
+            area_conf = min(1.0, area / max(3.0, frame_area * 0.00035))
+            contrast_conf = min(1.0, beacon_contrast / 180.0)
+            whiteness_conf = min(1.0, beacon_white_ratio / 0.90)
+            beacon_quality = 0.45 * area_conf + 0.35 * contrast_conf + 0.20 * whiteness_conf
             center_distance = math.hypot(
                 self.live_target_x - self.live_camera_x,
                 self.live_target_y - self.live_camera_y
@@ -725,10 +774,10 @@ class Environment(QWidget):
             )
             center_conf = max(0.0, 1.0 - center_distance / max(1.0, max_distance))
             self.live_confidence = max(0.0, min(100.0,
-                (0.65 * area_conf + 0.35 * center_conf) * 100.0
+                (0.70 * beacon_quality + 0.30 * center_conf) * 100.0
             ))
 
-            if distance <= 28.0:
+            if distance <= 22.0:
                 self.live_lock_counter += 1
             else:
                 self.live_lock_counter = max(0, self.live_lock_counter - 2)
@@ -743,6 +792,22 @@ class Environment(QWidget):
                 self.live_target_y = self.live_last_seen_y
                 self.live_error_x = self.live_target_x - self.live_camera_x
                 self.live_error_y = self.live_target_y - self.live_camera_y
+
+                # Continue the virtual camera motion for a few missed
+                # frames instead of freezing the viewport.
+                move_x = self.live_error_x * self.live_camera_gain * 0.55
+                move_y = self.live_error_y * self.live_camera_gain * 0.55
+                max_step = max(5.0, min(self.live_frame_width, self.live_frame_height) * 0.055)
+                move_x = max(-max_step, min(max_step, move_x))
+                move_y = max(-max_step, min(max_step, move_y))
+                crop_w = self.live_frame_width * self.live_crop_ratio
+                crop_h = self.live_frame_height * self.live_crop_ratio
+                half_w = crop_w / 2.0
+                half_h = crop_h / 2.0
+                self.live_camera_x += move_x
+                self.live_camera_y += move_y
+                self.live_camera_x = max(half_w, min(self.live_frame_width - half_w, self.live_camera_x))
+                self.live_camera_y = max(half_h, min(self.live_frame_height - half_h, self.live_camera_y))
                 self.live_confidence = max(0.0, self.live_confidence - 1.0)
                 self.state = "TRACKING"
             else:
@@ -752,6 +817,16 @@ class Environment(QWidget):
                 self.live_error_x = 0.0
                 self.live_error_y = 0.0
                 self.state = "SEARCHING"
+
+        self.live_confidence_history.append(self.live_confidence)
+        self.live_error_x_history.append(self.live_error_x)
+        self.live_error_y_history.append(self.live_error_y)
+        if len(self.live_confidence_history) > self.max_graph_points:
+            self.live_confidence_history.pop(0)
+        if len(self.live_error_x_history) > self.max_graph_points:
+            self.live_error_x_history.pop(0)
+        if len(self.live_error_y_history) > self.max_graph_points:
+            self.live_error_y_history.pop(0)
 
         self.update()
 
@@ -910,6 +985,17 @@ class Environment(QWidget):
                 self.lock_status = "NOT LOCKED"
                 self.video_error_x = 0.0
                 self.video_error_y = 0.0
+
+        # Keep a rolling history for the Video Upload performance graphs.
+        self.video_confidence_history.append(self.video_confidence)
+        self.video_error_x_history.append(self.video_error_x)
+        self.video_error_y_history.append(self.video_error_y)
+        if len(self.video_confidence_history) > self.max_graph_points:
+            self.video_confidence_history.pop(0)
+        if len(self.video_error_x_history) > self.max_graph_points:
+            self.video_error_x_history.pop(0)
+        if len(self.video_error_y_history) > self.max_graph_points:
+            self.video_error_y_history.pop(0)
 
         self.update()
 
@@ -2242,7 +2328,7 @@ class Environment(QWidget):
 
             painter.setPen(QColor(0, 220, 255))
             painter.setFont(QFont("Arial", 18, QFont.Bold))
-            painter.drawText(20, 88, title)
+            painter.drawText(20, 82, title)
 
             if self.operating_mode == "VIDEO" and self.video_frame is not None:
                 # ---------------------------------------------------------
@@ -2250,7 +2336,7 @@ class Environment(QWidget):
                 # RIGHT: large virtual camera view produced by that crop
                 # ---------------------------------------------------------
                 margin = 20
-                top = 72
+                top = 105
                 panel_w = 285
                 gap = 18
                 source_w = 330
@@ -2342,7 +2428,8 @@ class Environment(QWidget):
                                  f"Camera center: ({self.video_camera_x:.0f}, {self.video_camera_y:.0f})")
 
                 # Metrics panel.
-                painter.fillRect(panel_x, top, panel_w, 265, QColor(28, 28, 28))
+                metrics_h = 255
+                painter.fillRect(panel_x, top, panel_w, metrics_h, QColor(28, 28, 28))
                 painter.setPen(QColor(230, 230, 230))
                 painter.setFont(QFont("Arial", 11, QFont.Bold))
                 painter.drawText(panel_x + 15, top + 26, "VIDEO TRACKING METRICS")
@@ -2357,6 +2444,65 @@ class Environment(QWidget):
                 if self.video_path:
                     painter.drawText(panel_x + 15, top + 226, self.video_path.split('/')[-1][-34:])
 
+                # Video Upload performance graphs.
+                graph_y = top + metrics_h + 18
+                graph_h = 118
+
+                def draw_video_graph(x, y, w, h, title_text, history, ymin, ymax, line_color):
+                    painter.fillRect(x, y, w, h, QColor(18, 24, 35))
+                    painter.setPen(QPen(QColor(55, 80, 105), 1))
+                    painter.drawRect(x, y, w, h)
+                    painter.setPen(QColor(0, 220, 255))
+                    painter.setFont(QFont("Arial", 10, QFont.Bold))
+                    painter.drawText(x + 12, y + 20, title_text)
+                    left = x + 12
+                    right = x + w - 12
+                    top_p = y + 32
+                    bottom = y + h - 12
+                    painter.setPen(QPen(QColor(45, 55, 70), 1))
+                    painter.drawLine(left, bottom, right, bottom)
+                    if ymin < 0 < ymax:
+                        zero_y = bottom - ((0 - ymin) / (ymax - ymin)) * (bottom - top_p)
+                        painter.drawLine(left, int(zero_y), right, int(zero_y))
+                    if len(history) < 2:
+                        return
+                    painter.setPen(QPen(line_color, 2))
+                    points = []
+                    for i, value in enumerate(history):
+                        px = left + (i / max(1, len(history) - 1)) * (right - left)
+                        norm = max(0.0, min(1.0, (float(value) - ymin) / max(1e-9, ymax - ymin)))
+                        py = bottom - norm * (bottom - top_p)
+                        points.append((int(px), int(py)))
+                    for i in range(1, len(points)):
+                        painter.drawLine(points[i-1][0], points[i-1][1], points[i][0], points[i][1])
+
+                draw_video_graph(panel_x, graph_y, panel_w, graph_h,
+                                 "CONFIDENCE (%)", self.video_confidence_history,
+                                 0, 100, QColor(0, 255, 180))
+
+                error_graph_y = graph_y + graph_h + 14
+                draw_video_graph(panel_x, error_graph_y, panel_w, graph_h,
+                                 "TRACKING ERROR (X / Y)", self.video_error_x_history,
+                                 -300, 300, QColor(0, 220, 255))
+
+                if len(self.video_error_y_history) >= 2:
+                    left = panel_x + 12
+                    right = panel_x + panel_w - 12
+                    top_p = error_graph_y + 32
+                    bottom = error_graph_y + graph_h - 12
+                    painter.setPen(QPen(QColor(255, 190, 40), 2))
+                    points = []
+                    for i, value in enumerate(self.video_error_y_history):
+                        px = left + (i / max(1, len(self.video_error_y_history) - 1)) * (right - left)
+                        norm = max(0.0, min(1.0, (float(value) + 300.0) / 600.0))
+                        py = bottom - norm * (bottom - top_p)
+                        points.append((int(px), int(py)))
+                    for i in range(1, len(points)):
+                        painter.drawLine(points[i-1][0], points[i-1][1], points[i][0], points[i][1])
+                    painter.setFont(QFont("Arial", 8, QFont.Bold))
+                    painter.drawText(panel_x + 14, bottom + 2, "X")
+                    painter.drawText(panel_x + 30, bottom + 2, "Y")
+
             elif self.operating_mode == "VIDEO":
                 # Video mode dashboard before a file is selected.
                 painter.setPen(QColor(220, 220, 220))
@@ -2368,9 +2514,9 @@ class Environment(QWidget):
                 painter.drawText(24, 198, "Frames will be processed continuously for beacon detection.")
 
                 panel_x = self.width() - 315
-                panel_y = 72
+                panel_y = 105
                 panel_w = 285
-                panel_h = 265
+                panel_h = 255
                 painter.fillRect(panel_x, panel_y, panel_w, panel_h, QColor(28, 28, 28))
                 painter.setPen(QColor(0, 220, 255))
                 painter.setFont(QFont("Arial", 11, QFont.Bold))
@@ -2385,6 +2531,20 @@ class Environment(QWidget):
                 painter.drawText(panel_x + 15, panel_y + 200, "Lock: NOT LOCKED")
                 painter.setPen(QColor(120, 120, 120))
                 painter.drawText(panel_x + 15, panel_y + 230, "No video selected")
+
+                # Empty performance graphs are visible before a video is loaded.
+                graph_y = panel_y + panel_h + 18
+                graph_h = 118
+                for gy, title_text in ((graph_y, "CONFIDENCE (%)"),
+                                       (graph_y + graph_h + 14, "TRACKING ERROR (X / Y)")):
+                    painter.fillRect(panel_x, gy, panel_w, graph_h, QColor(18, 24, 35))
+                    painter.setPen(QPen(QColor(55, 80, 105), 1))
+                    painter.drawRect(panel_x, gy, panel_w, graph_h)
+                    painter.setPen(QColor(0, 220, 255))
+                    painter.setFont(QFont("Arial", 10, QFont.Bold))
+                    painter.drawText(panel_x + 12, gy + 20, title_text)
+                    painter.setPen(QPen(QColor(45, 55, 70), 1))
+                    painter.drawLine(panel_x + 12, gy + graph_h - 12, panel_x + panel_w - 12, gy + graph_h - 12)
 
             else:
                 # ---------------------------------------------------------
@@ -2589,6 +2749,55 @@ class Environment(QWidget):
                     "Webcam: ACTIVE" if self.live_capture is not None
                     else "Webcam: STOPPED"
                 )
+
+                # Live performance graphs.
+                graph_y = top + 295
+                graph_h = 125
+
+                def draw_graph(x, y, w, h, title, history, ymin, ymax):
+                    painter.fillRect(x, y, w, h, QColor(18, 24, 35))
+                    painter.setPen(QPen(QColor(55, 80, 105), 1))
+                    painter.drawRect(x, y, w, h)
+                    painter.setPen(QColor(0, 220, 255))
+                    painter.setFont(QFont("Arial", 10, QFont.Bold))
+                    painter.drawText(x + 12, y + 20, title)
+                    left, right = x + 12, x + w - 12
+                    top_p, bottom = y + 32, y + h - 12
+                    painter.setPen(QPen(QColor(45, 55, 70), 1))
+                    painter.drawLine(left, bottom, right, bottom)
+                    if ymin < 0 < ymax:
+                        zy = bottom - ((0 - ymin) / (ymax - ymin)) * (bottom - top_p)
+                        painter.drawLine(left, int(zy), right, int(zy))
+                    if len(history) < 2:
+                        return
+                    painter.setPen(QPen(QColor(0, 255, 180), 2))
+                    points = []
+                    for i, value in enumerate(history):
+                        px = left + (i / max(1, len(history) - 1)) * (right - left)
+                        norm = max(0.0, min(1.0, (float(value) - ymin) / max(1e-9, ymax - ymin)))
+                        py = bottom - norm * (bottom - top_p)
+                        points.append((int(px), int(py)))
+                    for i in range(1, len(points)):
+                        painter.drawLine(points[i-1][0], points[i-1][1], points[i][0], points[i][1])
+
+                draw_graph(panel_x, graph_y, panel_w, graph_h, "CONFIDENCE (%)", self.live_confidence_history, 0, 100)
+                draw_graph(panel_x, graph_y + graph_h + 12, panel_w, graph_h, "TRACKING ERROR (X / Y)", self.live_error_x_history, -300, 300)
+
+                if len(self.live_error_y_history) >= 2:
+                    x0, x1 = panel_x + 12, panel_x + panel_w - 12
+                    y0, y1 = graph_y + graph_h + 12 + 32, graph_y + graph_h + 12 + graph_h - 12
+                    painter.setPen(QPen(QColor(255, 190, 40), 2))
+                    points = []
+                    for i, value in enumerate(self.live_error_y_history):
+                        px = x0 + (i / max(1, len(self.live_error_y_history) - 1)) * (x1 - x0)
+                        norm = max(0.0, min(1.0, (float(value) + 300.0) / 600.0))
+                        py = y1 - norm * (y1 - y0)
+                        points.append((int(px), int(py)))
+                    for i in range(1, len(points)):
+                        painter.drawLine(points[i-1][0], points[i-1][1], points[i][0], points[i][1])
+                    painter.setFont(QFont("Arial", 8, QFont.Bold))
+                    painter.drawText(panel_x + 14, y1 + 2, "X")
+                    painter.drawText(panel_x + 30, y1 + 2, "Y")
 
             painter.end()
             return
