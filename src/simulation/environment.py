@@ -1,15 +1,20 @@
 import random
 import math
 
-from PySide6.QtWidgets import QWidget, QMenuBar
+from PySide6.QtWidgets import QWidget, QMenuBar, QFileDialog
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QAction
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QAction, QImage
 
 from src.simulation.beacon import Beacon
 from src.simulation.camera import VirtualCamera
 from src.simulation.sky_environment import SkyEnvironment
 from src.simulation.ocean_environment import OceanEnvironment
 from src.tracking.controller import TrackingController
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 
 class Environment(QWidget):
@@ -20,6 +25,14 @@ class Environment(QWidget):
 
         self.setMinimumSize(1000, 650)
         self.setFocusPolicy(Qt.StrongFocus)
+
+        # =================================
+        # OPERATING MODE
+        # =================================
+        # VIRTUAL = current simulation. VIDEO and LIVE are reserved for
+        # the next tracking-input stages and do not alter the current
+        # virtual simulation implementation.
+        self.operating_mode = "VIRTUAL"
 
         # =================================
         # HEADER MENU
@@ -55,8 +68,40 @@ class Environment(QWidget):
         """)
 
         file_menu = self.menu_bar.addMenu("File")
+        mode_menu = self.menu_bar.addMenu("Mode")
         simulation_menu = self.menu_bar.addMenu("Simulation")
         help_menu = self.menu_bar.addMenu("Help")
+
+        # =================================
+        # OPERATING MODE MENU
+        # =================================
+
+        virtual_mode_action = QAction("Virtual Simulation", self)
+        virtual_mode_action.triggered.connect(
+            lambda: self.set_operating_mode("VIRTUAL")
+        )
+        mode_menu.addAction(virtual_mode_action)
+
+        video_upload_menu = mode_menu.addMenu("Video Upload")
+        video_mode_action = QAction("Tracking Mode", self)
+        video_mode_action.triggered.connect(
+            lambda: self.set_operating_mode("VIDEO")
+        )
+        video_upload_menu.addAction(video_mode_action)
+
+        video_upload_action = QAction("Open Video File", self)
+        video_upload_action.triggered.connect(self.open_video_file)
+        video_upload_menu.addAction(video_upload_action)
+
+        live_tracking_menu = mode_menu.addMenu("Live Tracking")
+
+        live_mode_action = QAction("Start Live Camera", self)
+        live_mode_action.triggered.connect(self.start_live_tracking)
+        live_tracking_menu.addAction(live_mode_action)
+
+        live_stop_action = QAction("Stop Live Camera", self)
+        live_stop_action.triggered.connect(self.stop_live_tracking)
+        live_tracking_menu.addAction(live_stop_action)
 
         reset_action = QAction("Reset", self)
         reset_action.triggered.connect(self.reset_simulation)
@@ -217,8 +262,8 @@ class Environment(QWidget):
         # =================================
 
         self.camera = VirtualCamera(
-            x=250,
-            y=150,
+            x=125,
+            y=75,
             width=350,
             height=250
         )
@@ -291,6 +336,15 @@ class Environment(QWidget):
         self.is_running = True
 
         # =================================
+        # STARTUP STABILIZATION
+        # =================================
+        # Give the virtual camera a short settling period when the
+        # application first opens. This prevents the camera from jumping
+        # around while the first tracking frames are being initialized.
+        self.startup_frames = 90
+        self.startup_complete = False
+
+        # =================================
         # DISTURBANCE MODEL
         # =================================
 
@@ -301,8 +355,8 @@ class Environment(QWidget):
         # BEACON = beacon moves, camera stays fixed
         # BOTH   = camera and beacon move independently
         # OFF    = normal simulation/tracking
-        self.disturbance_mode = "CAMERA"
-        self.disturbances_enabled = True
+        self.disturbance_mode = "OFF"
+        self.disturbances_enabled = False
 
         # Strong enough to be clearly visible in the simulation.
         self.disturbance_strength = 1.5
@@ -319,6 +373,68 @@ class Environment(QWidget):
         # Fixed target position used by camera-disturbance tests.
         self.disturbance_beacon_x = self.beacon.x
         self.disturbance_beacon_y = self.beacon.y
+
+        # =================================
+        # VIDEO TRACKING
+        # =================================
+
+        self.video_capture = None
+        self.video_path = ""
+        self.video_frame = None
+        self.video_frame_rgb = None
+        self.video_frame_width = 0
+        self.video_frame_height = 0
+        self.video_target_found = False
+        self.video_target_x = 0.0
+        self.video_target_y = 0.0
+        self.video_error_x = 0.0
+        self.video_error_y = 0.0
+        self.video_confidence = 0.0
+        self.video_lock_counter = 0
+        self.video_lock = False
+
+        # Virtual camera for uploaded-video tracking.
+        # A recorded camera cannot physically move, so we simulate
+        # camera motion by moving a crop/viewport toward the beacon.
+        self.video_camera_x = 0.0
+        self.video_camera_y = 0.0
+        self.video_crop_ratio = 0.72
+        self.video_camera_gain = 0.34
+        self.video_target_smooth_x = None
+        self.video_target_smooth_y = None
+        self.video_last_seen_x = None
+        self.video_last_seen_y = None
+        self.video_missing_frames = 0
+
+        # =================================
+        # LIVE CAMERA TRACKING
+        # =================================
+        self.live_capture = None
+        self.live_frame = None
+        self.live_frame_rgb = None
+        self.live_frame_width = 0
+        self.live_frame_height = 0
+        self.live_target_found = False
+        self.live_target_x = 0.0
+        self.live_target_y = 0.0
+        self.live_error_x = 0.0
+        self.live_error_y = 0.0
+        self.live_confidence = 0.0
+        self.live_lock_counter = 0
+        self.live_lock = False
+        self.live_target_smooth_x = None
+        self.live_target_smooth_y = None
+        self.live_last_seen_x = None
+        self.live_last_seen_y = None
+        self.live_missing_frames = 0
+
+        # Virtual camera viewport for live tracking.
+        # The physical webcam cannot pan programmatically, so the UI
+        # simulates pan/tilt by moving a crop over the live frame.
+        self.live_camera_x = 0.0
+        self.live_camera_y = 0.0
+        self.live_crop_ratio = 0.52
+        self.live_camera_gain = 0.38
 
         # =================================
         # TIMER
@@ -340,6 +456,462 @@ class Environment(QWidget):
     # =================================
     # MENU ACTIONS
     # =================================
+
+    def set_operating_mode(self, mode):
+        if mode != "VIDEO" and self.video_capture is not None:
+            self.video_capture.release()
+            self.video_capture = None
+        if mode != "LIVE" and self.live_capture is not None:
+            self.live_capture.release()
+            self.live_capture = None
+
+        self.operating_mode = mode
+
+        if mode == "VIRTUAL":
+            self.is_running = True
+        elif mode == "VIDEO":
+            self.is_running = False
+            self.state = "VIDEO TRACKING"
+            self.target_visible = False
+            self.lock_status = "NOT LOCKED"
+            self.confidence = 0.0
+            self.error_x = 0.0
+            self.error_y = 0.0
+        else:
+            self.is_running = False
+            self.state = "LIVE TRACKING"
+            self.target_visible = False
+            self.lock_status = "NOT LOCKED"
+            self.confidence = 0.0
+            self.error_x = 0.0
+            self.error_y = 0.0
+
+        self.setFocus()
+        self.update()
+
+    def open_video_file(self):
+        if cv2 is None:
+            self.video_path = "OpenCV is not installed"
+            self.update()
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Beacon Tracking Video",
+            "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv);;All Files (*)"
+        )
+        if not path:
+            return
+
+        if self.video_capture is not None:
+            self.video_capture.release()
+
+        self.video_capture = cv2.VideoCapture(path)
+        if not self.video_capture.isOpened():
+            self.video_capture = None
+            self.video_path = "Unable to open video"
+            self.update()
+            return
+
+        self.video_path = path
+        self.operating_mode = "VIDEO"
+        self.is_running = True
+        self.video_target_found = False
+        self.video_lock_counter = 0
+        self.video_lock = False
+        self.video_target_smooth_x = None
+        self.video_target_smooth_y = None
+        self.video_last_seen_x = None
+        self.video_last_seen_y = None
+        self.video_missing_frames = 0
+
+        # Start the virtual camera at the uploaded video's center.
+        self.video_camera_x = self.video_frame_width / 2.0 if self.video_frame_width else 0.0
+        self.video_camera_y = self.video_frame_height / 2.0 if self.video_frame_height else 0.0
+
+        self.state = "VIDEO TRACKING"
+        self.update()
+
+    def start_live_tracking(self):
+        if cv2 is None:
+            self.operating_mode = "LIVE"
+            self.live_capture = None
+            self.state = "OPENING CAMERA"
+            self.update()
+            return
+
+        if self.video_capture is not None:
+            self.video_capture.release()
+            self.video_capture = None
+        if self.live_capture is not None:
+            self.live_capture.release()
+
+        self.live_capture = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if not self.live_capture.isOpened():
+            self.live_capture.release()
+            self.live_capture = None
+            self.operating_mode = "LIVE"
+            self.state = "CAMERA ERROR"
+            self.update()
+            return
+
+        self.operating_mode = "LIVE"
+        self.is_running = True
+        self.live_target_found = False
+        self.live_lock_counter = 0
+        self.live_lock = False
+        self.live_target_smooth_x = None
+        self.live_target_smooth_y = None
+        self.live_last_seen_x = None
+        self.live_last_seen_y = None
+        self.live_missing_frames = 0
+        self.live_camera_x = 0.0
+        self.live_camera_y = 0.0
+        self.state = "SEARCHING"
+        self.update()
+
+    def stop_live_tracking(self):
+        if self.live_capture is not None:
+            self.live_capture.release()
+            self.live_capture = None
+        self.live_frame = None
+        self.live_frame_rgb = None
+        self.operating_mode = "LIVE"
+        self.is_running = False
+        self.live_target_found = False
+        self.live_lock = False
+        self.live_lock_counter = 0
+        self.state = "LIVE CAMERA STOPPED"
+        self.update()
+
+    def update_live_frame(self):
+        if self.live_capture is None:
+            return
+
+        ok, frame = self.live_capture.read()
+        if not ok:
+            self.live_missing_frames += 1
+            return
+
+        self.live_frame = frame
+        self.live_frame_height, self.live_frame_width = frame.shape[:2]
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.live_frame_rgb = QImage(
+            rgb.data, self.live_frame_width, self.live_frame_height,
+            self.live_frame_width * 3, QImage.Format_RGB888
+        ).copy()
+
+        # -------------------------------------------------------------
+        # BEACON DETECTION
+        # Look for a compact, extremely bright optical source.
+        # This is more reliable for a phone/flashlight beacon than
+        # selecting any generally bright object in the room.
+        # -------------------------------------------------------------
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        threshold_value = 245
+        _, thresh = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+        contours, _ = cv2.findContours(
+            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        best = None
+        best_score = -1.0
+        frame_area = float(max(1, self.live_frame_width * self.live_frame_height))
+        ref_x, ref_y = self.live_last_seen_x, self.live_last_seen_y
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 2 or area > frame_area * 0.12:
+                continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+            if w > self.live_frame_width * 0.30 or h > self.live_frame_height * 0.30:
+                continue
+
+            roi = gray[y:y+h, x:x+w]
+            if roi.size == 0:
+                continue
+
+            peak = float(roi.max())
+            mean_brightness = float(roi.mean())
+            compactness = area / max(1.0, float(w * h))
+
+            # Optical beacon candidates should be very bright and compact.
+            score = peak * (0.55 + 0.45 * min(1.0, mean_brightness / 255.0))
+            score *= (0.55 + 0.45 * min(1.0, compactness * 2.0))
+            score *= math.sqrt(max(1.0, area))
+
+            if ref_x is not None and ref_y is not None:
+                cx0, cy0 = x + w / 2.0, y + h / 2.0
+                jump = math.hypot(cx0 - ref_x, cy0 - ref_y)
+                max_jump = max(45.0, min(self.live_frame_width, self.live_frame_height) * 0.35)
+                proximity = math.exp(-jump / max_jump)
+                score *= 0.25 + 0.75 * proximity
+
+            if score > best_score:
+                best_score = score
+                best = (x, y, w, h, area)
+
+        self.live_target_found = best is not None
+
+        if best is not None:
+            x, y, w, h, area = best
+            raw_x = x + w / 2.0
+            raw_y = y + h / 2.0
+
+            if self.live_target_smooth_x is None:
+                self.live_target_smooth_x = raw_x
+                self.live_target_smooth_y = raw_y
+            else:
+                alpha = 0.55
+                self.live_target_smooth_x += alpha * (raw_x - self.live_target_smooth_x)
+                self.live_target_smooth_y += alpha * (raw_y - self.live_target_smooth_y)
+
+            self.live_target_x = self.live_target_smooth_x
+            self.live_target_y = self.live_target_smooth_y
+            self.live_last_seen_x = self.live_target_x
+            self.live_last_seen_y = self.live_target_y
+            self.live_missing_frames = 0
+
+            # Start the virtual pan/tilt camera at the real frame center.
+            if self.live_camera_x == 0.0 and self.live_camera_y == 0.0:
+                self.live_camera_x = self.live_frame_width / 2.0
+                self.live_camera_y = self.live_frame_height / 2.0
+
+            # Smaller crop makes the camera motion visibly demonstrable.
+            crop_w = self.live_frame_width * self.live_crop_ratio
+            crop_h = self.live_frame_height * self.live_crop_ratio
+            half_w = crop_w / 2.0
+            half_h = crop_h / 2.0
+
+            # ---------------------------------------------------------
+            # CLOSED-LOOP VIRTUAL CAMERA
+            # The camera center moves toward the detected beacon.
+            # ---------------------------------------------------------
+            self.live_error_x = self.live_target_x - self.live_camera_x
+            self.live_error_y = self.live_target_y - self.live_camera_y
+
+            move_x = self.live_error_x * self.live_camera_gain
+            move_y = self.live_error_y * self.live_camera_gain
+            max_step = max(6.0, min(self.live_frame_width, self.live_frame_height) * 0.045)
+            move_x = max(-max_step, min(max_step, move_x))
+            move_y = max(-max_step, min(max_step, move_y))
+
+            self.live_camera_x += move_x
+            self.live_camera_y += move_y
+
+            self.live_camera_x = max(half_w, min(self.live_frame_width - half_w, self.live_camera_x))
+            self.live_camera_y = max(half_h, min(self.live_frame_height - half_h, self.live_camera_y))
+
+            self.live_error_x = self.live_target_x - self.live_camera_x
+            self.live_error_y = self.live_target_y - self.live_camera_y
+            distance = math.hypot(self.live_error_x, self.live_error_y)
+
+            # Confidence combines beacon brightness/size and alignment.
+            area_conf = min(1.0, area / max(10.0, frame_area * 0.0008))
+            center_distance = math.hypot(
+                self.live_target_x - self.live_camera_x,
+                self.live_target_y - self.live_camera_y
+            )
+            max_distance = math.hypot(
+                self.live_frame_width / 2.0, self.live_frame_height / 2.0
+            )
+            center_conf = max(0.0, 1.0 - center_distance / max(1.0, max_distance))
+            self.live_confidence = max(0.0, min(100.0,
+                (0.65 * area_conf + 0.35 * center_conf) * 100.0
+            ))
+
+            if distance <= 28.0:
+                self.live_lock_counter += 1
+            else:
+                self.live_lock_counter = max(0, self.live_lock_counter - 2)
+
+            self.live_lock = self.live_lock_counter >= 10
+            self.state = "LOCKED" if self.live_lock else "TRACKING"
+
+        else:
+            self.live_missing_frames += 1
+            if self.live_last_seen_x is not None and self.live_missing_frames <= 8:
+                self.live_target_x = self.live_last_seen_x
+                self.live_target_y = self.live_last_seen_y
+                self.live_error_x = self.live_target_x - self.live_camera_x
+                self.live_error_y = self.live_target_y - self.live_camera_y
+                self.live_confidence = max(0.0, self.live_confidence - 1.0)
+                self.state = "TRACKING"
+            else:
+                self.live_lock_counter = 0
+                self.live_lock = False
+                self.live_confidence = max(0.0, self.live_confidence - 4.0)
+                self.live_error_x = 0.0
+                self.live_error_y = 0.0
+                self.state = "SEARCHING"
+
+        self.update()
+
+    def update_video_frame(self):
+        if self.video_capture is None:
+            return
+
+        ok, frame = self.video_capture.read()
+        if not ok:
+            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = self.video_capture.read()
+            if not ok:
+                return
+
+        self.video_frame = frame
+        self.video_frame_height, self.video_frame_width = frame.shape[:2]
+
+        # Keep the virtual camera inside the video frame.
+        crop_w = max(1.0, self.video_frame_width * self.video_crop_ratio)
+        crop_h = max(1.0, self.video_frame_height * self.video_crop_ratio)
+        half_w = crop_w / 2.0
+        half_h = crop_h / 2.0
+        if self.video_camera_x <= 0.0 and self.video_camera_y <= 0.0:
+            self.video_camera_x = self.video_frame_width / 2.0
+            self.video_camera_y = self.video_frame_height / 2.0
+        self.video_camera_x = max(half_w, min(self.video_camera_x, self.video_frame_width - half_w))
+        self.video_camera_y = max(half_h, min(self.video_camera_y, self.video_frame_height - half_h))
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.video_frame_rgb = QImage(
+            rgb.data,
+            self.video_frame_width,
+            self.video_frame_height,
+            self.video_frame_width * 3,
+            QImage.Format_RGB888
+        ).copy()
+
+        # Generic beacon detector: find the brightest compact region.
+        # This works well for a visible/bright optical beacon without
+        # requiring a trained model for the first video-input stage.
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (7, 7), 0)
+        _, threshold = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(
+            threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        best = None
+        best_score = -1.0
+        frame_area = float(max(1, self.video_frame_width * self.video_frame_height))
+
+        # Once the beacon has been acquired, prefer bright candidates near
+        # the previous beacon position. This prevents a bright wall/phone
+        # reflection from stealing the tracker after a few frames.
+        reference_x = self.video_last_seen_x
+        reference_y = self.video_last_seen_y
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 3 or area > frame_area * 0.05:
+                continue
+            x, y, w, h = cv2.boundingRect(contour)
+            if w > self.video_frame_width * 0.35 or h > self.video_frame_height * 0.35:
+                continue
+
+            cx = x + w / 2.0
+            cy = y + h / 2.0
+            brightness = float(gray[y:y+h, x:x+w].mean())
+            base_score = area * brightness
+
+            if reference_x is not None and reference_y is not None:
+                jump = math.hypot(cx - reference_x, cy - reference_y)
+                # Strongly penalize implausibly large frame-to-frame jumps.
+                motion_score = math.exp(-jump / max(30.0, min(self.video_frame_width, self.video_frame_height) * 0.18))
+                score = base_score * (0.35 + 0.65 * motion_score)
+            else:
+                score = base_score
+
+            if score > best_score:
+                best_score = score
+                best = (x, y, w, h, area)
+
+        self.video_target_found = best is not None
+
+        if best is not None:
+            x, y, w, h, area = best
+            raw_x = x + w / 2.0
+            raw_y = y + h / 2.0
+
+            # Smooth the detected beacon position so the virtual camera
+            # follows continuously instead of jumping between frames.
+            if self.video_target_smooth_x is None:
+                self.video_target_smooth_x = raw_x
+                self.video_target_smooth_y = raw_y
+            else:
+                alpha = 0.42
+                self.video_target_smooth_x += alpha * (raw_x - self.video_target_smooth_x)
+                self.video_target_smooth_y += alpha * (raw_y - self.video_target_smooth_y)
+
+            self.video_target_x = self.video_target_smooth_x
+            self.video_target_y = self.video_target_smooth_y
+            self.video_last_seen_x = self.video_target_x
+            self.video_last_seen_y = self.video_target_y
+            self.video_missing_frames = 0
+
+            # Error is measured against the MOVING virtual camera center,
+            # not the fixed center of the original video frame.
+            self.video_error_x = self.video_target_x - self.video_camera_x
+            self.video_error_y = self.video_target_y - self.video_camera_y
+
+            # Virtual camera control: pan the displayed viewport toward the
+            # detected beacon. This is the video equivalent of camera motion
+            # in the Virtual Simulation mode.
+            move_x = self.video_error_x * self.video_camera_gain
+            move_y = self.video_error_y * self.video_camera_gain
+            self.video_camera_x += move_x
+            self.video_camera_y += move_y
+
+            self.video_camera_x = max(half_w, min(self.video_camera_x, self.video_frame_width - half_w))
+            self.video_camera_y = max(half_h, min(self.video_camera_y, self.video_frame_height - half_h))
+
+            # Recalculate the residual pointing error after the camera move.
+            self.video_error_x = self.video_target_x - self.video_camera_x
+            self.video_error_y = self.video_target_y - self.video_camera_y
+
+            area_conf = min(1.0, area / max(20.0, frame_area * 0.002))
+            distance = math.hypot(self.video_error_x, self.video_error_y)
+            max_distance = math.hypot(self.video_frame_width / 2.0, self.video_frame_height / 2.0)
+            center_conf = max(0.0, 1.0 - distance / max(1.0, max_distance))
+            self.video_confidence = max(0.0, min(100.0, (0.55 * area_conf + 0.45 * center_conf) * 100.0))
+
+            if distance <= 25.0:
+                self.video_lock_counter += 1
+            else:
+                self.video_lock_counter = max(0, self.video_lock_counter - 2)
+
+            self.video_lock = self.video_lock_counter >= 8
+            self.state = "LOCKED" if self.video_lock else "TRACKING"
+            self.lock_status = "LOCKED" if self.video_lock else "NOT LOCKED"
+        else:
+            # Do not immediately lose the target because of one bad frame.
+            # Hold the last valid target briefly while the detector recovers.
+            self.video_missing_frames += 1
+            if self.video_last_seen_x is not None and self.video_missing_frames <= 6:
+                self.video_target_x = self.video_last_seen_x
+                self.video_target_y = self.video_last_seen_y
+                self.video_error_x = self.video_target_x - self.video_camera_x
+                self.video_error_y = self.video_target_y - self.video_camera_y
+                self.video_confidence = max(0.0, self.video_confidence - 1.5)
+                self.state = "TRACKING"
+            else:
+                self.video_confidence = max(0.0, self.video_confidence - 5.0)
+                self.video_lock_counter = 0
+                self.video_lock = False
+                self.state = "SEARCHING"
+                self.lock_status = "NOT LOCKED"
+                self.video_error_x = 0.0
+                self.video_error_y = 0.0
+
+        self.update()
 
     def select_environment(self, environment):
         self.current_environment = environment
@@ -416,8 +988,8 @@ class Environment(QWidget):
         self.lock_status = "NOT LOCKED"
         self.state_counter = 0
         self.lock_counter = 0
-        self.disturbance_mode = "CAMERA"
-        self.disturbances_enabled = True
+        self.disturbance_mode = "OFF"
+        self.disturbances_enabled = False
         self.disturbance_strength = 1.5
         self.disturbance_strength_name = "MEDIUM"
         self.disturbance_peak_error = 0.0
@@ -430,7 +1002,7 @@ class Environment(QWidget):
         self.error_x_history.clear()
         self.error_y_history.clear()
 
-        self.is_running = True
+        self.is_running = (self.operating_mode == "VIRTUAL")
         self.setFocus()
         self.update()
 
@@ -445,9 +1017,48 @@ class Environment(QWidget):
 
     def update_simulation(self):
 
+        if self.operating_mode == "VIDEO":
+            if self.is_running:
+                self.update_video_frame()
+            else:
+                self.update()
+            return
+
+        if self.operating_mode == "LIVE":
+            if self.is_running and self.live_capture is not None:
+                self.update_live_frame()
+            else:
+                self.update()
+            return
+
         # Animation
 
         self.animation_time += 0.05
+
+        # =================================
+        # STARTUP STABILIZATION
+        # =================================
+        if not self.startup_complete:
+            self.startup_frames -= 1
+
+            # Keep the camera initially centered on the beacon so the
+            # simulation opens in a stable, immediately understandable
+            # tracking position.
+            target_cx = self.beacon.x - self.camera.width / 2.0
+            target_cy = self.beacon.y - self.camera.height / 2.0
+            self.camera.x += (target_cx - self.camera.x) * 0.18
+            self.camera.y += (target_cy - self.camera.y) * 0.18
+
+            if self.startup_frames <= 0:
+                self.startup_complete = True
+                self.lock_counter = 0
+                self.state = "TRACKING"
+
+                # IMPORTANT: startup always remains disturbance-free.
+                # Disturbances begin only after the user explicitly
+                # selects Camera, Beacon, or Both from the menu.
+                self.disturbance_mode = "OFF"
+                self.disturbances_enabled = False
 
         # =================================
         # UPDATE ENVIRONMENTS
@@ -712,7 +1323,7 @@ class Environment(QWidget):
         # CAMERA BEHAVIOR
         # =================================
 
-        if self.target_visible:
+        if self.target_visible and self.startup_complete:
 
             # Calculate error
 
@@ -760,26 +1371,20 @@ class Environment(QWidget):
 
                 )
 
-        else:
+        elif self.startup_complete:
 
-            # Search only when target
-            # is not temporarily occluded
-
+            # Search only after startup stabilization.
             if self.state != "OCCLUDED":
-
                 self.camera.search(
-
                     self.width(),
-
                     self.height()
-
                 )
 
         # =================================
         # APPLY SELECTED DISTURBANCE
         # =================================
 
-        if self.disturbances_enabled:
+        if self.disturbances_enabled and self.startup_complete:
 
             # Smooth platform drift + vibration + random jitter.
             camera_dx = (
@@ -1623,6 +2228,372 @@ class Environment(QWidget):
         painter = QPainter(self)
 
         # =================================
+        # VIDEO / LIVE MODE
+        # =================================
+        if self.operating_mode != "VIRTUAL":
+            painter.fillRect(self.rect(), QColor(18, 18, 18))
+
+            if self.operating_mode == "VIDEO":
+                title = "VIDEO UPLOAD TRACKING MODE"
+                if self.video_frame_rgb is not None:
+                    painter.drawImage(20, 55, self.video_frame_rgb)
+            else:
+                title = "LIVE TRACKING MODE"
+
+            painter.setPen(QColor(0, 220, 255))
+            painter.setFont(QFont("Arial", 18, QFont.Bold))
+            painter.drawText(20, 88, title)
+
+            if self.operating_mode == "VIDEO" and self.video_frame is not None:
+                # ---------------------------------------------------------
+                # LEFT: original video/world view with a MOVING camera box
+                # RIGHT: large virtual camera view produced by that crop
+                # ---------------------------------------------------------
+                margin = 20
+                top = 72
+                panel_w = 285
+                gap = 18
+                source_w = 330
+                source_h = min(270, max(190, self.height() - 120))
+                view_x = margin + source_w + gap
+                panel_x = self.width() - panel_w - margin
+                view_w = max(420, panel_x - gap - view_x)
+                view_h = max(360, self.height() - top - 25)
+
+                # Original video as a world/reference view.
+                source_img = self.video_frame_rgb.scaled(
+                    source_w, source_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                source_x = margin
+                source_y = top
+                painter.drawImage(source_x, source_y, source_img)
+                painter.setPen(QPen(QColor(110, 110, 110), 2))
+                painter.drawRect(source_x, source_y, source_img.width(), source_img.height())
+                painter.setPen(QColor(200, 200, 200))
+                painter.setFont(QFont("Arial", 9, QFont.Bold))
+                painter.drawText(source_x + 8, source_y + 18, "VIDEO / WORLD VIEW")
+
+                # Camera viewport rectangle inside the original video.
+                src_scale_x = source_img.width() / max(1, self.video_frame_width)
+                src_scale_y = source_img.height() / max(1, self.video_frame_height)
+                crop_w = max(2, int(self.video_frame_width * self.video_crop_ratio))
+                crop_h = max(2, int(self.video_frame_height * self.video_crop_ratio))
+                crop_x = int(round(self.video_camera_x - crop_w / 2.0))
+                crop_y = int(round(self.video_camera_y - crop_h / 2.0))
+                crop_x = max(0, min(crop_x, self.video_frame_width - crop_w))
+                crop_y = max(0, min(crop_y, self.video_frame_height - crop_h))
+
+                cam_rect_x = source_x + crop_x * src_scale_x
+                cam_rect_y = source_y + crop_y * src_scale_y
+                cam_rect_w = crop_w * src_scale_x
+                cam_rect_h = crop_h * src_scale_y
+                painter.setPen(QPen(QColor(0, 255, 120), 3))
+                painter.drawRect(int(cam_rect_x), int(cam_rect_y), int(cam_rect_w), int(cam_rect_h))
+
+                # Beacon position in the world view.
+                if self.video_target_found:
+                    wx = source_x + self.video_target_x * src_scale_x
+                    wy = source_y + self.video_target_y * src_scale_y
+                    painter.setPen(QPen(QColor(0, 255, 120), 2))
+                    painter.drawEllipse(int(wx - 7), int(wy - 7), 14, 14)
+
+                # Large moving camera view.
+                cropped = self.video_frame_rgb.copy(crop_x, crop_y, crop_w, crop_h)
+                image = cropped.scaled(
+                    view_w, view_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                painter.drawImage(view_x, top, image)
+                painter.setPen(QPen(QColor(0, 255, 120), 3))
+                painter.drawRect(view_x, top, image.width(), image.height())
+
+                sx = image.width() / max(1, crop_w)
+                sy = image.height() / max(1, crop_h)
+                cx = view_x + image.width() / 2
+                cy = top + image.height() / 2
+
+                # Fixed camera center / crosshair.
+                painter.setPen(QPen(QColor(80, 220, 255), 2))
+                painter.drawLine(int(cx - 18), int(cy), int(cx + 18), int(cy))
+                painter.drawLine(int(cx), int(cy - 18), int(cx), int(cy + 18))
+                painter.drawEllipse(int(cx - 5), int(cy - 5), 10, 10)
+
+                if self.video_target_found:
+                    tx = view_x + (self.video_target_x - crop_x) * sx
+                    ty = top + (self.video_target_y - crop_y) * sy
+                    painter.setPen(QPen(QColor(0, 255, 120), 3))
+                    painter.drawEllipse(int(tx - 11), int(ty - 11), 22, 22)
+                    painter.drawLine(int(cx), int(cy), int(tx), int(ty))
+                    painter.setFont(QFont("Arial", 10, QFont.Bold))
+                    painter.drawText(int(tx + 14), int(ty - 12), "BEACON")
+
+                # Make the camera motion obvious to the user.
+                pan_x = self.video_error_x
+                pan_y = self.video_error_y
+                painter.setPen(QColor(0, 220, 255))
+                painter.setFont(QFont("Arial", 10, QFont.Bold))
+                direction = "CENTERED"
+                if abs(pan_x) > 8:
+                    direction = "PAN RIGHT" if pan_x > 0 else "PAN LEFT"
+                elif abs(pan_y) > 8:
+                    direction = "PAN DOWN" if pan_y > 0 else "PAN UP"
+                painter.drawText(view_x + 12, top + 24, f"VIRTUAL CAMERA  •  {direction}")
+                painter.setFont(QFont("Arial", 9))
+                painter.drawText(view_x + 12, top + 44,
+                                 f"Camera center: ({self.video_camera_x:.0f}, {self.video_camera_y:.0f})")
+
+                # Metrics panel.
+                painter.fillRect(panel_x, top, panel_w, 265, QColor(28, 28, 28))
+                painter.setPen(QColor(230, 230, 230))
+                painter.setFont(QFont("Arial", 11, QFont.Bold))
+                painter.drawText(panel_x + 15, top + 26, "VIDEO TRACKING METRICS")
+                painter.setFont(QFont("Arial", 10))
+                painter.drawText(panel_x + 15, top + 56, f"State: {self.state}")
+                painter.drawText(panel_x + 15, top + 84, f"Beacon: {'DETECTED' if self.video_target_found else 'NOT DETECTED'}")
+                painter.drawText(panel_x + 15, top + 112, f"Confidence: {self.video_confidence:.1f}%")
+                painter.drawText(panel_x + 15, top + 140, f"Error X: {self.video_error_x:.1f} px")
+                painter.drawText(panel_x + 15, top + 168, f"Error Y: {self.video_error_y:.1f} px")
+                painter.drawText(panel_x + 15, top + 196, f"Lock: {'LOCKED' if self.video_lock else 'NOT LOCKED'}")
+                painter.setPen(QColor(150, 150, 150))
+                if self.video_path:
+                    painter.drawText(panel_x + 15, top + 226, self.video_path.split('/')[-1][-34:])
+
+            elif self.operating_mode == "VIDEO":
+                # Video mode dashboard before a file is selected.
+                painter.setPen(QColor(220, 220, 220))
+                painter.setFont(QFont("Arial", 12, QFont.Bold))
+                painter.drawText(24, 110, "VIDEO INPUT")
+                painter.setFont(QFont("Arial", 11))
+                painter.drawText(24, 142, "Select a recorded video to start beacon tracking.")
+                painter.drawText(24, 170, "Use Mode → Video Upload → Open Video File")
+                painter.drawText(24, 198, "Frames will be processed continuously for beacon detection.")
+
+                panel_x = self.width() - 315
+                panel_y = 72
+                panel_w = 285
+                panel_h = 265
+                painter.fillRect(panel_x, panel_y, panel_w, panel_h, QColor(28, 28, 28))
+                painter.setPen(QColor(0, 220, 255))
+                painter.setFont(QFont("Arial", 11, QFont.Bold))
+                painter.drawText(panel_x + 15, panel_y + 26, "VIDEO TRACKING METRICS")
+                painter.setPen(QColor(210, 210, 210))
+                painter.setFont(QFont("Arial", 10))
+                painter.drawText(panel_x + 15, panel_y + 60, "State: WAITING FOR VIDEO")
+                painter.drawText(panel_x + 15, panel_y + 88, "Beacon: NOT DETECTED")
+                painter.drawText(panel_x + 15, panel_y + 116, "Confidence: 0.0%")
+                painter.drawText(panel_x + 15, panel_y + 144, "Error X: 0.0 px")
+                painter.drawText(panel_x + 15, panel_y + 172, "Error Y: 0.0 px")
+                painter.drawText(panel_x + 15, panel_y + 200, "Lock: NOT LOCKED")
+                painter.setPen(QColor(120, 120, 120))
+                painter.drawText(panel_x + 15, panel_y + 230, "No video selected")
+
+            else:
+                # ---------------------------------------------------------
+                # LIVE TRACKING MODE — ORIGINAL VIEW + VIRTUAL CAMERA VIEW
+                # ---------------------------------------------------------
+                margin = 20
+                top = 120
+                panel_w = 300
+                panel_x = self.width() - panel_w - margin
+                gap = 20
+                source_w = 360
+
+                # Leave enough room for both views and the metrics panel.
+                available_left = max(700, panel_x - margin - gap)
+                source_w = min(source_w, max(280, int(available_left * 0.28)))
+                view_x = margin + source_w + gap
+                view_w = max(420, panel_x - gap - view_x)
+                view_h = max(400, self.height() - top - 25)
+
+                if self.live_frame_rgb is not None:
+                    # =====================================================
+                    # LEFT — ORIGINAL / WORLD VIEW
+                    # =====================================================
+                    source_img = self.live_frame_rgb.scaled(
+                        source_w,
+                        min(360, max(240, self.height() - 170)),
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                    source_x = margin
+                    source_y = top
+                    painter.drawImage(source_x, source_y, source_img)
+
+                    painter.setPen(QPen(QColor(90, 100, 115), 2))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawRect(
+                        source_x, source_y, source_img.width(), source_img.height()
+                    )
+
+                    painter.setPen(QColor(225, 225, 225))
+                    painter.setFont(QFont("Arial", 10, QFont.Bold))
+                    painter.drawText(
+                        source_x + 10, source_y + 20,
+                        "ORIGINAL / WORLD VIEW"
+                    )
+
+                    # Coordinate mapping from camera frame to original view.
+                    sx0 = source_img.width() / max(1, self.live_frame_width)
+                    sy0 = source_img.height() / max(1, self.live_frame_height)
+
+                    crop_w = max(2, int(self.live_frame_width * self.live_crop_ratio))
+                    crop_h = max(2, int(self.live_frame_height * self.live_crop_ratio))
+                    crop_x = int(round(self.live_camera_x - crop_w / 2.0))
+                    crop_y = int(round(self.live_camera_y - crop_h / 2.0))
+                    crop_x = max(0, min(crop_x, self.live_frame_width - crop_w))
+                    crop_y = max(0, min(crop_y, self.live_frame_height - crop_h))
+
+                    # Moving green rectangle = current virtual camera FOV.
+                    camera_box_x = source_x + crop_x * sx0
+                    camera_box_y = source_y + crop_y * sy0
+                    camera_box_w = max(3, int(crop_w * sx0))
+                    camera_box_h = max(3, int(crop_h * sy0))
+                    painter.setPen(QPen(QColor(0, 255, 120), 3))
+                    painter.drawRect(
+                        int(camera_box_x), int(camera_box_y),
+                        camera_box_w, camera_box_h
+                    )
+
+                    painter.setPen(QColor(0, 255, 120))
+                    painter.setFont(QFont("Arial", 9, QFont.Bold))
+                    painter.drawText(
+                        int(camera_box_x + 6),
+                        int(camera_box_y + 16),
+                        "VIRTUAL CAMERA FOV"
+                    )
+
+                    # Beacon marker in original/world view.
+                    if self.live_target_found:
+                        wx = source_x + self.live_target_x * sx0
+                        wy = source_y + self.live_target_y * sy0
+                        painter.setPen(QPen(QColor(0, 255, 120), 3))
+                        painter.drawEllipse(int(wx - 8), int(wy - 8), 16, 16)
+                        painter.drawLine(
+                            int(wx - 13), int(wy), int(wx + 13), int(wy)
+                        )
+                        painter.drawLine(
+                            int(wx), int(wy - 13), int(wx), int(wy + 13)
+                        )
+
+                    # =====================================================
+                    # RIGHT — MOVING VIRTUAL CAMERA VIEW
+                    # =====================================================
+                    cropped = self.live_frame_rgb.copy(
+                        crop_x, crop_y, crop_w, crop_h
+                    )
+                    image = cropped.scaled(
+                        view_w, view_h,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                    painter.drawImage(view_x, top, image)
+
+                    painter.setPen(QPen(QColor(0, 255, 120), 3))
+                    painter.drawRect(
+                        view_x, top, image.width(), image.height()
+                    )
+
+                    sx = image.width() / max(1, crop_w)
+                    sy = image.height() / max(1, crop_h)
+                    cx = view_x + image.width() / 2.0
+                    cy = top + image.height() / 2.0
+
+                    # Header inside the camera view.
+                    direction = "CENTERED"
+                    if abs(self.live_error_x) > 10:
+                        direction = (
+                            "PAN RIGHT" if self.live_error_x > 0
+                            else "PAN LEFT"
+                        )
+                    if (
+                        abs(self.live_error_y) > 10
+                        and abs(self.live_error_y) > abs(self.live_error_x)
+                    ):
+                        direction = (
+                            "PAN DOWN" if self.live_error_y > 0
+                            else "PAN UP"
+                        )
+
+                    painter.setPen(QColor(0, 220, 255))
+                    painter.setFont(QFont("Arial", 13, QFont.Bold))
+                    painter.drawText(
+                        view_x + 14, top + 25,
+                        f"VIRTUAL CAMERA  •  {direction}"
+                    )
+                    painter.setFont(QFont("Arial", 10))
+                    painter.drawText(
+                        view_x + 14, top + 46,
+                        f"Camera center: ({self.live_camera_x:.0f}, {self.live_camera_y:.0f})"
+                    )
+
+                    # Camera center crosshair.
+                    painter.setPen(QPen(QColor(80, 220, 255), 2))
+                    painter.drawLine(int(cx - 22), int(cy), int(cx + 22), int(cy))
+                    painter.drawLine(int(cx), int(cy - 22), int(cx), int(cy + 22))
+                    painter.drawEllipse(int(cx - 6), int(cy - 6), 12, 12)
+
+                    # Beacon marker + error vector in camera view.
+                    if self.live_target_found:
+                        tx = view_x + (self.live_target_x - crop_x) * sx
+                        ty = top + (self.live_target_y - crop_y) * sy
+                        painter.setPen(QPen(QColor(0, 255, 120), 3))
+                        painter.drawEllipse(int(tx - 13), int(ty - 13), 26, 26)
+                        painter.drawLine(int(cx), int(cy), int(tx), int(ty))
+                        painter.setFont(QFont("Arial", 11, QFont.Bold))
+                        painter.drawText(int(tx + 18), int(ty - 12), "BEACON")
+
+                else:
+                    painter.setPen(QColor(210, 210, 210))
+                    painter.setFont(QFont("Arial", 13, QFont.Bold))
+                    painter.drawText(24, 145, "LIVE CAMERA INPUT")
+                    painter.setFont(QFont("Arial", 11))
+                    painter.drawText(24, 175, "Use Mode → Live Tracking → Start Live Camera")
+
+                # =====================================================
+                # LIVE TRACKING METRICS
+                # =====================================================
+                painter.fillRect(
+                    panel_x, top, panel_w, 275, QColor(28, 28, 28)
+                )
+                painter.setPen(QColor(0, 220, 255))
+                painter.setFont(QFont("Arial", 12, QFont.Bold))
+                painter.drawText(
+                    panel_x + 15, top + 28,
+                    "LIVE TRACKING METRICS"
+                )
+                painter.setPen(QColor(220, 220, 220))
+                painter.setFont(QFont("Arial", 10))
+                painter.drawText(panel_x + 15, top + 60, f"State: {self.state}")
+                painter.drawText(
+                    panel_x + 15, top + 90,
+                    f"Beacon: {'DETECTED' if self.live_target_found else 'NOT DETECTED'}"
+                )
+                painter.drawText(
+                    panel_x + 15, top + 120,
+                    f"Confidence: {self.live_confidence:.1f}%"
+                )
+                painter.drawText(
+                    panel_x + 15, top + 150,
+                    f"Error X: {self.live_error_x:.1f} px"
+                )
+                painter.drawText(
+                    panel_x + 15, top + 180,
+                    f"Error Y: {self.live_error_y:.1f} px"
+                )
+                painter.drawText(
+                    panel_x + 15, top + 210,
+                    f"Lock: {'LOCKED' if self.live_lock else 'NOT LOCKED'}"
+                )
+                painter.setPen(QColor(150, 150, 150))
+                painter.drawText(
+                    panel_x + 15, top + 240,
+                    "Webcam: ACTIVE" if self.live_capture is not None
+                    else "Webcam: STOPPED"
+                )
+
+            painter.end()
+            return
+
+        # =================================
         # DRAW BACKGROUND
         # =================================
 
@@ -1744,6 +2715,12 @@ class Environment(QWidget):
                 170,
                 0
             )
+
+        # During the first startup frames, show a dedicated initialization
+        # state instead of briefly reporting ACQUIRED/LOCKED.
+        if not self.startup_complete:
+            status_text = "INITIALIZING TRACKING"
+            status_color = QColor(90, 190, 255)
 
         camera_color = status_color
 
@@ -2054,15 +3031,10 @@ class Environment(QWidget):
             status_font
         )
 
-        painter.drawText(
-
-            30,
-
-            50,
-
-            status_text
-
-        )
+        # Transparent status text: no opaque banner behind the state.
+        painter.setPen(status_color)
+        painter.setFont(status_font)
+        painter.drawText(28, 52, status_text)
 
         # =================================
         # ENVIRONMENT NAME
@@ -2454,53 +3426,36 @@ class Environment(QWidget):
         # =================================
         # DISTURBANCE STATUS
         # =================================
+        # Keep the dashboard clean: disturbance information is shown
+        # only when the user has explicitly enabled a disturbance mode.
+        if self.disturbances_enabled:
+            painter.setPen(label_color)
+            painter.drawText(
+                panel_x + 20,
+                panel_y + 255,
+                "Disturbance:"
+            )
 
-        painter.setPen(label_color)
-
-        painter.drawText(
-
-            panel_x + 20,
-
-            panel_y + 255,
-
-            "Disturbance:"
-
-        )
-
-        disturbance_color = (
-            QColor(255, 170, 0)
-            if self.disturbances_enabled
-            else QColor(120, 220, 140)
-        )
-
-        painter.setPen(disturbance_color)
-
-        mode_label = {
-            "CAMERA": "CAMERA",
-            "BEACON": "BEACON",
-            "BOTH": "BOTH",
-            "OFF": "OFF"
-        }.get(self.disturbance_mode, "OFF")
-
-        strength_label = (
-            self.disturbance_strength_name
-            if self.disturbances_enabled
-            else "OFF"
-        )
-
-        painter.drawText(
-
-            panel_x + 110,
-
-            panel_y + 255,
-
-            mode_label + " / " + strength_label
-
-        )
+            painter.setPen(QColor(255, 170, 0))
+            mode_label = {
+                "CAMERA": "CAMERA",
+                "BEACON": "BEACON",
+                "BOTH": "BOTH",
+                "OFF": "OFF"
+            }.get(self.disturbance_mode, "OFF")
+            painter.drawText(
+                panel_x + 110,
+                panel_y + 255,
+                mode_label + " / " + self.disturbance_strength_name
+            )
 
         # =================================
         # DISTURBANCE PERFORMANCE PANEL
         # =================================
+
+        if not self.disturbances_enabled:
+            painter.end()
+            return
 
         performance_x = self.width() - 300
         performance_y = 665
@@ -2577,13 +3532,9 @@ class Environment(QWidget):
             )
 
             painter.drawText(
-
-                30,
-
-                115,
-
+                28,
+                92,
                 "SIGNAL BLOCKED BY CLOUD"
-
             )
 
         # =================================
@@ -2613,13 +3564,9 @@ class Environment(QWidget):
             )
 
             painter.drawText(
-
-                30,
-
-                115,
-
+                28,
+                92,
                 "LOCK CONDITION: STABLE"
-
             )
 
         # =================================
@@ -2629,12 +3576,34 @@ class Environment(QWidget):
         # available from the header menu. Keyboard shortcuts remain active.
 
         # =================================
+        # ACTIVE OPERATING MODE
+        # =================================
+
+        painter.setPen(QColor(190, 190, 190))
+        painter.setFont(QFont("Arial", 9))
+        painter.drawText(
+            28,
+            72,
+            "MODE: VIRTUAL SIMULATION  •  TRACKING ACTIVE"
+        )
+
+        # =================================
         # RIGHT-SIDE GRAPHS
         # =================================
 
         self.draw_graphs(painter)
 
         painter.end()
+
+
+    def closeEvent(self, event):
+        if self.video_capture is not None:
+            self.video_capture.release()
+            self.video_capture = None
+        if self.live_capture is not None:
+            self.live_capture.release()
+            self.live_capture = None
+        event.accept()
 
 
     # =================================
@@ -2792,8 +3761,8 @@ class Environment(QWidget):
             self.state_counter = 0
             self.lock_counter = 0
 
-            self.disturbance_mode = "CAMERA"
-            self.disturbances_enabled = True
+            self.disturbance_mode = "OFF"
+            self.disturbances_enabled = False
             self.disturbance_beacon_x = self.beacon.x
             self.disturbance_beacon_y = self.beacon.y
 
