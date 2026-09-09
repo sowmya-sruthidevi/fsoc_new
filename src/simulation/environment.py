@@ -28,7 +28,7 @@ class Environment(QWidget):
         self.current_environment = "SPACE"
 
         # =================================
-        # CREATE ENVIRONMENTS
+        # ENVIRONMENTS
         # =================================
 
         self.sky_environment = SkyEnvironment()
@@ -58,11 +58,10 @@ class Environment(QWidget):
                     0.02,
                     0.08
                 )
-
             })
 
         # =================================
-        # ANIMATION TIME
+        # ANIMATION
         # =================================
 
         self.animation_time = 0.0
@@ -72,7 +71,6 @@ class Environment(QWidget):
         # =================================
 
         self.sky_sun_progress = 0.08
-
         self.sky_sun_speed = 0.00025
 
         # =================================
@@ -80,11 +78,10 @@ class Environment(QWidget):
         # =================================
 
         self.sun_occluded = False
-
         self.previous_sun_occluded = False
 
         # =================================
-        # CREATE TARGET
+        # TARGET
         # =================================
 
         self.beacon = Beacon(
@@ -93,7 +90,7 @@ class Environment(QWidget):
         )
 
         # =================================
-        # CREATE CAMERA
+        # CAMERA
         # =================================
 
         self.camera = VirtualCamera(
@@ -104,7 +101,7 @@ class Environment(QWidget):
         )
 
         # =================================
-        # TRACKING CONTROLLER
+        # CONTROLLER
         # =================================
 
         self.controller = TrackingController()
@@ -117,7 +114,7 @@ class Environment(QWidget):
         self.previous_visible = False
 
         # =================================
-        # SIMULATION STATE
+        # STATE
         # =================================
 
         self.state = "SEARCHING"
@@ -131,13 +128,20 @@ class Environment(QWidget):
         self.error_y = 0.0
 
         # =================================
+        # GENERAL METRICS
+        # =================================
+
+        self.confidence = 0.0
+        self.lock_status = "NOT LOCKED"
+
+        # =================================
         # LOCK THRESHOLD
         # =================================
 
         self.lock_threshold = 80.0
 
         # =================================
-        # SIMULATION RUNNING
+        # RUNNING
         # =================================
 
         self.is_running = True
@@ -161,14 +165,12 @@ class Environment(QWidget):
 
     def update_simulation(self):
 
-        # =================================
-        # UPDATE ANIMATION TIME
-        # =================================
+        # Animation
 
         self.animation_time += 0.05
 
         # =================================
-        # UPDATE ENVIRONMENT ANIMATIONS
+        # UPDATE ENVIRONMENTS
         # =================================
 
         if self.current_environment == "SKY":
@@ -184,7 +186,7 @@ class Environment(QWidget):
             )
 
         # =================================
-        # PAUSE SIMULATION
+        # PAUSE
         # =================================
 
         if not self.is_running:
@@ -203,20 +205,18 @@ class Environment(QWidget):
                 self.height()
             )
 
+            self.sun_occluded = False
+
 
         elif self.current_environment == "SKY":
 
-            # =================================
-            # SLOW SUN MOVEMENT
-            # =================================
+            # Move sun slowly
 
             self.sky_sun_progress += (
                 self.sky_sun_speed
             )
 
-            # =================================
-            # SUN REACHES END
-            # =================================
+            # Restart sun path
 
             if self.sky_sun_progress >= 1.0:
 
@@ -231,7 +231,7 @@ class Environment(QWidget):
                 self.previous_sun_occluded = False
 
             # =================================
-            # SUN HORIZONTAL MOVEMENT
+            # SUN HORIZONTAL PATH
             # =================================
 
             start_x = -self.beacon.radius
@@ -259,7 +259,7 @@ class Environment(QWidget):
             )
 
             # =================================
-            # SUN CURVED PATH
+            # SUN ARC PATH
             # =================================
 
             horizon_y = (
@@ -295,28 +295,6 @@ class Environment(QWidget):
             )
 
             # =================================
-            # KEEP SUN INSIDE SCREEN
-            # =================================
-
-            self.beacon.y = max(
-
-                self.beacon.radius + 40,
-
-                min(
-
-                    self.beacon.y,
-
-                    self.height()
-                    -
-                    self.beacon.radius
-                    -
-                    80
-
-                )
-
-            )
-
-            # =================================
             # CHECK CLOUD OCCLUSION
             # =================================
 
@@ -344,13 +322,8 @@ class Environment(QWidget):
 
             self.sun_occluded = False
 
-
-        else:
-
-            self.sun_occluded = False
-
         # =================================
-        # CHECK CAMERA VISIBILITY
+        # CAMERA VISIBILITY
         # =================================
 
         camera_can_see_target = (
@@ -358,6 +331,7 @@ class Environment(QWidget):
             self.camera.is_target_visible(
 
                 self.beacon.x,
+
                 self.beacon.y
 
             )
@@ -367,11 +341,6 @@ class Environment(QWidget):
         # =================================
         # FINAL TARGET VISIBILITY
         # =================================
-
-        # In SKY environment:
-        # Even if the camera points correctly,
-        # the target is not visible when a
-        # cloud blocks the sun.
 
         if (
 
@@ -392,7 +361,7 @@ class Environment(QWidget):
             )
 
         # =================================
-        # CLOUD OCCLUSION STATE
+        # OCCLUDED STATE
         # =================================
 
         if (
@@ -404,8 +373,6 @@ class Environment(QWidget):
             self.sun_occluded
 
         ):
-
-            # Cloud naturally blocks the sun
 
             self.state = "OCCLUDED"
 
@@ -462,6 +429,7 @@ class Environment(QWidget):
                 self.camera.calculate_error(
 
                     self.beacon.x,
+
                     self.beacon.y
 
                 )
@@ -475,6 +443,7 @@ class Environment(QWidget):
                 self.controller.calculate_movement(
 
                     self.error_x,
+
                     self.error_y
 
                 )
@@ -486,29 +455,26 @@ class Environment(QWidget):
             self.camera.move(
 
                 move_x,
+
                 move_y,
 
                 self.width(),
+
                 self.height()
 
             )
 
         else:
 
-            # =================================
-            # SEARCH ONLY WHEN NOT OCCLUDED
-            # =================================
-
-            # When the cloud blocks the sun,
-            # the camera should not immediately
-            # behave as if the target vanished
-            # permanently.
+            # Search only when target
+            # is not temporarily occluded
 
             if self.state != "OCCLUDED":
 
                 self.camera.search(
 
                     self.width(),
+
                     self.height()
 
                 )
@@ -522,11 +488,76 @@ class Environment(QWidget):
             self.camera.calculate_error(
 
                 self.beacon.x,
+
                 self.beacon.y
 
             )
 
         )
+
+        # =================================
+        # CALCULATE CONFIDENCE
+        # =================================
+
+        distance_error = math.sqrt(
+
+            self.error_x ** 2
+
+            +
+
+            self.error_y ** 2
+
+        )
+
+        max_error = math.sqrt(
+
+            self.width() ** 2
+
+            +
+
+            self.height() ** 2
+
+        )
+
+        if self.target_visible:
+
+            self.confidence = max(
+
+                0.0,
+
+                min(
+
+                    100.0,
+
+                    100.0 - (
+
+                        distance_error
+                        /
+                        max_error
+                        *
+                        100
+
+                    )
+
+                )
+
+            )
+
+        else:
+
+            self.confidence = 0.0
+
+        # =================================
+        # LOCK STATUS
+        # =================================
+
+        if self.state == "LOCKED":
+
+            self.lock_status = "LOCKED"
+
+        else:
+
+            self.lock_status = "NOT LOCKED"
 
         # =================================
         # UPDATE NORMAL STATE
@@ -565,7 +596,7 @@ class Environment(QWidget):
                         self.state = "TRACKING"
 
         # =================================
-        # CLOUD JUST MOVED AWAY
+        # CLOUD MOVED AWAY
         # =================================
 
         if (
@@ -589,7 +620,19 @@ class Environment(QWidget):
                 self.state_counter = 60
 
         # =================================
-        # SAVE PREVIOUS STATUS
+        # UPDATE LOCK STATUS AGAIN
+        # =================================
+
+        if self.state == "LOCKED":
+
+            self.lock_status = "LOCKED"
+
+        else:
+
+            self.lock_status = "NOT LOCKED"
+
+        # =================================
+        # SAVE PREVIOUS VALUES
         # =================================
 
         self.previous_visible = (
@@ -625,13 +668,7 @@ class Environment(QWidget):
 
         )
 
-        painter.setPen(
-            Qt.NoPen
-        )
-
-        # =================================
-        # DRAW STARS
-        # =================================
+        painter.setPen(Qt.NoPen)
 
         for star in self.stars:
 
@@ -651,7 +688,9 @@ class Environment(QWidget):
 
                 )
 
-                + 1
+                +
+
+                1
 
             ) / 2
 
@@ -668,7 +707,9 @@ class Environment(QWidget):
                 QColor(
 
                     value,
+
                     value,
+
                     value
 
                 )
@@ -694,6 +735,7 @@ class Environment(QWidget):
             painter.drawEllipse(
 
                 int(star["x"]),
+
                 int(star["y"]),
 
                 max(
@@ -723,16 +765,22 @@ class Environment(QWidget):
 
             )
 
-            + 1
+            +
+
+            1
 
         ) / 2
 
         glow_radius = (
 
             self.beacon.radius
+
             +
+
             8
+
             +
+
             pulse * 10
 
         )
@@ -741,12 +789,16 @@ class Environment(QWidget):
             Qt.NoPen
         )
 
+        # Glow
+
         painter.setBrush(
 
             QColor(
 
                 255,
+
                 40,
+
                 40,
 
                 int(
@@ -764,19 +816,15 @@ class Environment(QWidget):
         painter.drawEllipse(
 
             int(
-
                 self.beacon.x
                 -
                 glow_radius
-
             ),
 
             int(
-
                 self.beacon.y
                 -
                 glow_radius
-
             ),
 
             int(
@@ -789,7 +837,7 @@ class Environment(QWidget):
 
         )
 
-        # Main beacon
+        # Beacon
 
         painter.setBrush(
 
@@ -812,19 +860,15 @@ class Environment(QWidget):
         painter.drawEllipse(
 
             int(
-
                 self.beacon.x
                 -
                 self.beacon.radius
-
             ),
 
             int(
-
                 self.beacon.y
                 -
                 self.beacon.radius
-
             ),
 
             int(
@@ -847,7 +891,7 @@ class Environment(QWidget):
         painter = QPainter(self)
 
         # =================================
-        # DRAW ENVIRONMENT BACKGROUND
+        # DRAW BACKGROUND
         # =================================
 
         if self.current_environment == "SPACE":
@@ -894,9 +938,6 @@ class Environment(QWidget):
                 0
             )
 
-            camera_color = status_color
-
-
         elif self.state == "ACQUIRED":
 
             status_text = "TARGET ACQUIRED"
@@ -906,9 +947,6 @@ class Environment(QWidget):
                 255,
                 120
             )
-
-            camera_color = status_color
-
 
         elif self.state == "TRACKING":
 
@@ -920,9 +958,6 @@ class Environment(QWidget):
                 255
             )
 
-            camera_color = status_color
-
-
         elif self.state == "LOCKED":
 
             status_text = "TARGET LOCKED"
@@ -932,9 +967,6 @@ class Environment(QWidget):
                 80,
                 255
             )
-
-            camera_color = status_color
-
 
         elif self.state == "OCCLUDED":
 
@@ -946,9 +978,6 @@ class Environment(QWidget):
                 0
             )
 
-            camera_color = status_color
-
-
         elif self.state == "LOST":
 
             status_text = "TARGET LOST"
@@ -958,9 +987,6 @@ class Environment(QWidget):
                 70,
                 70
             )
-
-            camera_color = status_color
-
 
         else:
 
@@ -972,10 +998,10 @@ class Environment(QWidget):
                 0
             )
 
-            camera_color = status_color
+        camera_color = status_color
 
         # =================================
-        # DRAW CAMERA FIELD OF VIEW
+        # CAMERA FIELD OF VIEW
         # =================================
 
         camera_pen = QPen(
@@ -1005,7 +1031,7 @@ class Environment(QWidget):
         )
 
         # =================================
-        # DRAW CAMERA CENTER
+        # CAMERA CENTER
         # =================================
 
         center_x, center_y = (
@@ -1066,7 +1092,7 @@ class Environment(QWidget):
 
         elif self.current_environment == "SKY":
 
-            # Draw sun first
+            # Draw sun
 
             self.sky_environment.draw_sun_target(
 
@@ -1080,12 +1106,8 @@ class Environment(QWidget):
 
             )
 
-            # ---------------------------------
-            # DRAW CLOUDS IN FRONT OF SUN
-            # ---------------------------------
-
-            # This is what visually makes the
-            # cloud cover the sun.
+            # Draw clouds again in front
+            # so they can visually cover sun
 
             self.sky_environment.draw_foreground_clouds(
 
@@ -1108,7 +1130,7 @@ class Environment(QWidget):
             )
 
         # =================================
-        # DRAW LOCK BOX
+        # LOCK BOX
         # =================================
 
         if self.state == "LOCKED":
@@ -1166,7 +1188,7 @@ class Environment(QWidget):
             )
 
         # =================================
-        # DRAW STATUS TEXT
+        # STATUS TEXT
         # =================================
 
         painter.setPen(
@@ -1186,6 +1208,7 @@ class Environment(QWidget):
         painter.drawText(
 
             30,
+
             50,
 
             status_text
@@ -1227,49 +1250,360 @@ class Environment(QWidget):
         )
 
         # =================================
-        # ERROR TEXT
+        # SYSTEM METRICS PANEL
+        # =================================
+
+        panel_x = self.width() - 300
+        panel_y = 70
+        panel_width = 260
+        panel_height = 235
+
+        # Panel
+
+        panel_pen = QPen(
+
+            QColor(
+                100,
+                180,
+                255,
+                180
+            )
+
+        )
+
+        panel_pen.setWidth(2)
+
+        painter.setPen(
+            panel_pen
+        )
+
+        painter.setBrush(
+
+            QColor(
+                10,
+                20,
+                35,
+                210
+            )
+
+        )
+
+        painter.drawRoundedRect(
+
+            panel_x,
+
+            panel_y,
+
+            panel_width,
+
+            panel_height,
+
+            12,
+
+            12
+
+        )
+
+        # =================================
+        # PANEL TITLE
         # =================================
 
         painter.setPen(
 
             QColor(
-                220,
-                220,
-                220
+                100,
+                200,
+                255
             )
 
         )
 
-        error_font = QFont()
+        title_font = QFont()
 
-        error_font.setPointSize(12)
+        title_font.setPointSize(13)
+
+        title_font.setBold(True)
 
         painter.setFont(
-            error_font
+            title_font
         )
 
-        error_text = (
+        painter.drawText(
 
-            f"Error X: {self.error_x:.1f} px"
+            panel_x + 20,
 
-            f"    "
+            panel_y + 35,
 
-            f"Error Y: {self.error_y:.1f} px"
+            "SYSTEM METRICS"
+
+        )
+
+        # =================================
+        # METRIC FONT
+        # =================================
+
+        metric_font = QFont()
+
+        metric_font.setPointSize(11)
+
+        painter.setFont(
+            metric_font
+        )
+
+        label_color = QColor(
+            220,
+            220,
+            220
+        )
+
+        # =================================
+        # STATE
+        # =================================
+
+        painter.setPen(
+            label_color
+        )
+
+        painter.drawText(
+
+            panel_x + 20,
+
+            panel_y + 75,
+
+            "State:"
+
+        )
+
+        painter.setPen(
+            status_color
+        )
+
+        painter.drawText(
+
+            panel_x + 110,
+
+            panel_y + 75,
+
+            self.state
+
+        )
+
+        # =================================
+        # VISIBILITY
+        # =================================
+
+        painter.setPen(
+            label_color
+        )
+
+        painter.drawText(
+
+            panel_x + 20,
+
+            panel_y + 105,
+
+            "Visibility:"
+
+        )
+
+        if self.target_visible:
+
+            visibility_text = "VISIBLE"
+
+            visibility_color = QColor(
+                0,
+                255,
+                120
+            )
+
+        else:
+
+            visibility_text = "NOT VISIBLE"
+
+            visibility_color = QColor(
+                255,
+                80,
+                80
+            )
+
+        painter.setPen(
+            visibility_color
+        )
+
+        painter.drawText(
+
+            panel_x + 110,
+
+            panel_y + 105,
+
+            visibility_text
+
+        )
+
+        # =================================
+        # CONFIDENCE
+        # =================================
+
+        painter.setPen(
+            label_color
+        )
+
+        painter.drawText(
+
+            panel_x + 20,
+
+            panel_y + 135,
+
+            "Confidence:"
+
+        )
+
+        painter.setPen(
+
+            QColor(
+                255,
+                220,
+                80
+            )
 
         )
 
         painter.drawText(
 
-            30,
+            panel_x + 130,
 
-            85,
+            panel_y + 135,
 
-            error_text
+            f"{self.confidence:.1f}%"
 
         )
 
         # =================================
-        # OCCLUSION INFORMATION
+        # ERROR X
+        # =================================
+
+        painter.setPen(
+            label_color
+        )
+
+        painter.drawText(
+
+            panel_x + 20,
+
+            panel_y + 165,
+
+            "Error X:"
+
+        )
+
+        painter.setPen(
+
+            QColor(
+                0,
+                200,
+                255
+            )
+
+        )
+
+        painter.drawText(
+
+            panel_x + 110,
+
+            panel_y + 165,
+
+            f"{self.error_x:.1f} px"
+
+        )
+
+        # =================================
+        # ERROR Y
+        # =================================
+
+        painter.setPen(
+            label_color
+        )
+
+        painter.drawText(
+
+            panel_x + 20,
+
+            panel_y + 195,
+
+            "Error Y:"
+
+        )
+
+        painter.setPen(
+
+            QColor(
+                0,
+                200,
+                255
+            )
+
+        )
+
+        painter.drawText(
+
+            panel_x + 110,
+
+            panel_y + 195,
+
+            f"{self.error_y:.1f} px"
+
+        )
+
+        # =================================
+        # LOCK STATUS
+        # =================================
+
+        painter.setPen(
+            label_color
+        )
+
+        painter.drawText(
+
+            panel_x + 20,
+
+            panel_y + 225,
+
+            "Lock:"
+
+        )
+
+        if self.lock_status == "LOCKED":
+
+            lock_color = QColor(
+                180,
+                80,
+                255
+            )
+
+        else:
+
+            lock_color = QColor(
+                255,
+                100,
+                100
+            )
+
+        painter.setPen(
+            lock_color
+        )
+
+        painter.drawText(
+
+            panel_x + 110,
+
+            panel_y + 225,
+
+            self.lock_status
+
+        )
+
+        # =================================
+        # OCCLUSION MESSAGE
         # =================================
 
         if self.state == "OCCLUDED":
@@ -1305,7 +1639,7 @@ class Environment(QWidget):
             )
 
         # =================================
-        # LOCK INFORMATION
+        # LOCK MESSAGE
         # =================================
 
         elif self.state == "LOCKED":
@@ -1412,7 +1746,7 @@ class Environment(QWidget):
     def keyPressEvent(self, event):
 
         # =================================
-        # 1 = SPACE ENVIRONMENT
+        # SPACE WORLD
         # =================================
 
         if event.key() == Qt.Key_1:
@@ -1423,9 +1757,8 @@ class Environment(QWidget):
 
             self.update()
 
-
         # =================================
-        # 2 = SKY ENVIRONMENT
+        # SKY WORLD
         # =================================
 
         elif event.key() == Qt.Key_2:
@@ -1434,9 +1767,8 @@ class Environment(QWidget):
 
             self.update()
 
-
         # =================================
-        # 3 = OCEAN ENVIRONMENT
+        # OCEAN WORLD
         # =================================
 
         elif event.key() == Qt.Key_3:
@@ -1447,22 +1779,18 @@ class Environment(QWidget):
 
             self.update()
 
-
         # =================================
-        # SPACE = PAUSE / RESUME
+        # PAUSE
         # =================================
 
         elif event.key() == Qt.Key_Space:
 
             self.is_running = (
-
                 not self.is_running
-
             )
 
-
         # =================================
-        # R = RESET
+        # RESET
         # =================================
 
         elif event.key() == Qt.Key_R:
@@ -1480,6 +1808,7 @@ class Environment(QWidget):
             self.sky_sun_progress = 0.08
 
             self.sun_occluded = False
+
             self.previous_sun_occluded = False
 
             # Reset camera
@@ -1487,19 +1816,23 @@ class Environment(QWidget):
             self.camera.x = 250
             self.camera.y = 150
 
-            self.camera.search_direction = 1
+            # Support both camera versions
 
             if hasattr(
-
                 self.camera,
+                "search_direction"
+            ):
 
+                self.camera.search_direction = 1
+
+            if hasattr(
+                self.camera,
                 "search_vertical_direction"
-
             ):
 
                 self.camera.search_vertical_direction = 1
 
-            # Reset simulation state
+            # Reset state
 
             self.state = "SEARCHING"
 
@@ -1510,12 +1843,15 @@ class Environment(QWidget):
             self.error_x = 0.0
             self.error_y = 0.0
 
+            self.confidence = 0.0
+
+            self.lock_status = "NOT LOCKED"
+
             self.state_counter = 0
 
             self.is_running = True
 
             self.update()
-
 
         else:
 
