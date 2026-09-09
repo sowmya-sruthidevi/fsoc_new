@@ -27,7 +27,10 @@ class Environment(QWidget):
 
         self.current_environment = "SPACE"
 
-        # Create environments
+        # =================================
+        # CREATE ENVIRONMENTS
+        # =================================
+
         self.sky_environment = SkyEnvironment()
         self.ocean_environment = OceanEnvironment()
 
@@ -63,6 +66,18 @@ class Environment(QWidget):
         # =================================
 
         self.animation_time = 0.0
+
+        # =================================
+        # SKY SUN MOVEMENT
+        # =================================
+
+        # 0 = left side
+        # 1 = right side
+        self.sky_sun_progress = 0.08
+
+        # Speed of sun movement
+        # Smaller value = slower movement
+        self.sky_sun_speed = 0.00025
 
         # =================================
         # CREATE TARGET
@@ -133,6 +148,7 @@ class Environment(QWidget):
             self.update_simulation
         )
 
+        # Approximately 60 FPS
         self.timer.start(16)
 
 
@@ -142,12 +158,15 @@ class Environment(QWidget):
 
     def update_simulation(self):
 
-        # Update animation
+        # =================================
+        # UPDATE ANIMATION TIME
+        # =================================
+
         self.animation_time += 0.05
 
-        # ---------------------------------
+        # =================================
         # UPDATE ENVIRONMENT ANIMATIONS
-        # ---------------------------------
+        # =================================
 
         if self.current_environment == "SKY":
 
@@ -161,9 +180,9 @@ class Environment(QWidget):
                 self.width()
             )
 
-        # ---------------------------------
+        # =================================
         # PAUSE SIMULATION
-        # ---------------------------------
+        # =================================
 
         if not self.is_running:
 
@@ -186,71 +205,131 @@ class Environment(QWidget):
 
         elif self.current_environment == "SKY":
 
-            # Slow sun movement
+            # =================================
+            # REALISTIC SLOW SUN MOVEMENT
+            # =================================
 
-            self.beacon.x += (
-                self.beacon.vx * 0.02
+            # Slowly increase sun progress
+            self.sky_sun_progress += (
+                self.sky_sun_speed
             )
 
-            self.beacon.y += (
-                self.beacon.vy * 0.01
+            # =================================
+            # SUN REACHES END OF SKY
+            # =================================
+
+            if self.sky_sun_progress >= 1.0:
+
+                # Restart from left side
+                self.sky_sun_progress = 0.0
+
+                # Target was lost
+                self.state = "SEARCHING"
+
+                self.target_visible = False
+                self.previous_visible = False
+
+            # =================================
+            # SUN HORIZONTAL MOVEMENT
+            # =================================
+
+            # Sun moves from left to right
+
+            start_x = (
+                -self.beacon.radius
             )
 
-            # Keep sun inside boundaries
+            end_x = (
+                self.width()
+                + self.beacon.radius
+            )
 
-            if (
-                self.beacon.x - self.beacon.radius
-                <= 0
-            ):
+            self.beacon.x = (
 
-                self.beacon.x = (
-                    self.beacon.radius
+                start_x
+
+                +
+
+                (
+                    end_x - start_x
                 )
 
-                self.beacon.vx *= -1
+                *
 
+                self.sky_sun_progress
 
-            elif (
-                self.beacon.x + self.beacon.radius
-                >= self.width()
-            ):
+            )
 
-                self.beacon.x = (
-                    self.width()
-                    - self.beacon.radius
+            # =================================
+            # SUN CURVED PATH
+            # =================================
+
+            # Sun starts lower
+            # Moves upward
+            # Reaches highest point
+            # Slowly moves downward
+
+            horizon_y = (
+                self.height() * 0.38
+            )
+
+            sky_arc_height = (
+                self.height() * 0.22
+            )
+
+            sun_arc = (
+
+                math.sin(
+
+                    math.pi
+                    *
+                    self.sky_sun_progress
+
                 )
 
-                self.beacon.vx *= -1
+                *
 
+                sky_arc_height
 
-            if (
-                self.beacon.y - self.beacon.radius
-                <= 0
-            ):
+            )
 
-                self.beacon.y = (
-                    self.beacon.radius
-                )
+            # Subtract because screen Y
+            # increases downward
 
-                self.beacon.vy *= -1
+            self.beacon.y = (
 
+                horizon_y
+                -
+                sun_arc
 
-            elif (
-                self.beacon.y + self.beacon.radius
-                >= self.height()
-            ):
+            )
 
-                self.beacon.y = (
+            # =================================
+            # KEEP SUN INSIDE SAFE AREA
+            # =================================
+
+            self.beacon.y = max(
+
+                self.beacon.radius + 40,
+
+                min(
+
+                    self.beacon.y,
+
                     self.height()
-                    - self.beacon.radius
+                    -
+                    self.beacon.radius
+                    -
+                    80
+
                 )
 
-                self.beacon.vy *= -1
+            )
 
 
         elif self.current_environment == "OCEAN":
 
-            # UAV moves normally
+            # Normal UAV / target movement
 
             self.beacon.update(
                 self.width(),
@@ -305,14 +384,15 @@ class Environment(QWidget):
 
             self.state_counter = 60
 
-
         # =================================
         # CAMERA BEHAVIOR
         # =================================
 
         if self.target_visible:
 
-            # Calculate error
+            # =================================
+            # CALCULATE TRACKING ERROR
+            # =================================
 
             self.error_x, self.error_y = (
 
@@ -325,7 +405,9 @@ class Environment(QWidget):
 
             )
 
-            # Controller movement
+            # =================================
+            # CONTROLLER MOVEMENT
+            # =================================
 
             move_x, move_y = (
 
@@ -338,7 +420,9 @@ class Environment(QWidget):
 
             )
 
-            # Move camera
+            # =================================
+            # MOVE CAMERA
+            # =================================
 
             self.camera.move(
 
@@ -350,10 +434,11 @@ class Environment(QWidget):
 
             )
 
-
         else:
 
-            # Search for target
+            # =================================
+            # SEARCH FOR TARGET
+            # =================================
 
             self.camera.search(
 
@@ -361,7 +446,6 @@ class Environment(QWidget):
                 self.height()
 
             )
-
 
         # =================================
         # RECALCULATE ERROR
@@ -378,7 +462,6 @@ class Environment(QWidget):
 
         )
 
-
         # =================================
         # UPDATE STATE
         # =================================
@@ -387,13 +470,11 @@ class Environment(QWidget):
 
             self.state_counter -= 1
 
-
         else:
 
             if not self.target_visible:
 
                 self.state = "SEARCHING"
-
 
             else:
 
@@ -411,11 +492,9 @@ class Environment(QWidget):
 
                     self.state = "LOCKED"
 
-
                 else:
 
                     self.state = "TRACKING"
-
 
         # =================================
         # SAVE PREVIOUS VISIBILITY
@@ -456,6 +535,10 @@ class Environment(QWidget):
             Qt.NoPen
         )
 
+        # =================================
+        # DRAW STARS
+        # =================================
+
         for star in self.stars:
 
             brightness = (
@@ -463,10 +546,14 @@ class Environment(QWidget):
                 math.sin(
 
                     self.animation_time
-                    * star["speed"]
-                    * 20
+                    *
+                    star["speed"]
+                    *
+                    20
 
-                    + star["phase"]
+                    +
+
+                    star["phase"]
 
                 )
 
@@ -477,7 +564,8 @@ class Environment(QWidget):
             value = int(
 
                 120
-                + brightness * 135
+                +
+                brightness * 135
 
             )
 
@@ -497,10 +585,13 @@ class Environment(QWidget):
 
                 star["size"]
 
-                * (
+                *
+
+                (
 
                     0.7
-                    + brightness * 0.6
+                    +
+                    brightness * 0.6
 
                 )
 
@@ -542,13 +633,17 @@ class Environment(QWidget):
 
         ) / 2
 
-        # Glow
+        # =================================
+        # BEACON GLOW
+        # =================================
 
         glow_radius = (
 
             self.beacon.radius
-            + 8
-            + pulse * 10
+            +
+            8
+            +
+            pulse * 10
 
         )
 
@@ -567,7 +662,8 @@ class Environment(QWidget):
                 int(
 
                     50
-                    + pulse * 100
+                    +
+                    pulse * 100
 
                 )
 
@@ -580,14 +676,16 @@ class Environment(QWidget):
             int(
 
                 self.beacon.x
-                - glow_radius
+                -
+                glow_radius
 
             ),
 
             int(
 
                 self.beacon.y
-                - glow_radius
+                -
+                glow_radius
 
             ),
 
@@ -601,7 +699,9 @@ class Environment(QWidget):
 
         )
 
-        # Main beacon
+        # =================================
+        # MAIN BEACON
+        # =================================
 
         painter.setBrush(
 
@@ -611,7 +711,8 @@ class Environment(QWidget):
 
                 int(
                     40
-                    + pulse * 100
+                    +
+                    pulse * 100
                 ),
 
                 40
@@ -625,14 +726,16 @@ class Environment(QWidget):
             int(
 
                 self.beacon.x
-                - self.beacon.radius
+                -
+                self.beacon.radius
 
             ),
 
             int(
 
                 self.beacon.y
-                - self.beacon.radius
+                -
+                self.beacon.radius
 
             ),
 
@@ -690,7 +793,6 @@ class Environment(QWidget):
                 self.height()
 
             )
-
 
         # =================================
         # STATUS COLORS
@@ -773,9 +875,8 @@ class Environment(QWidget):
 
             camera_color = status_color
 
-
         # =================================
-        # DRAW CAMERA FOV
+        # DRAW CAMERA FIELD OF VIEW
         # =================================
 
         camera_pen = QPen(
@@ -804,7 +905,6 @@ class Environment(QWidget):
 
         )
 
-
         # =================================
         # DRAW CAMERA CENTER
         # =================================
@@ -831,6 +931,8 @@ class Environment(QWidget):
             center_pen
         )
 
+        # Horizontal center line
+
         painter.drawLine(
 
             int(center_x - 20),
@@ -843,6 +945,8 @@ class Environment(QWidget):
 
         )
 
+        # Vertical center line
+
         painter.drawLine(
 
             int(center_x),
@@ -854,7 +958,6 @@ class Environment(QWidget):
             int(center_y + 20)
 
         )
-
 
         # =================================
         # DRAW TARGET
@@ -896,7 +999,6 @@ class Environment(QWidget):
 
             )
 
-
         # =================================
         # DRAW LOCK BOX
         # =================================
@@ -926,7 +1028,8 @@ class Environment(QWidget):
             box_size = (
 
                 self.beacon.radius * 2
-                + 20
+                +
+                20
 
             )
 
@@ -935,14 +1038,16 @@ class Environment(QWidget):
                 int(
 
                     self.beacon.x
-                    - box_size / 2
+                    -
+                    box_size / 2
 
                 ),
 
                 int(
 
                     self.beacon.y
-                    - box_size / 2
+                    -
+                    box_size / 2
 
                 ),
 
@@ -951,7 +1056,6 @@ class Environment(QWidget):
                 int(box_size)
 
             )
-
 
         # =================================
         # DRAW STATUS TEXT
@@ -979,7 +1083,6 @@ class Environment(QWidget):
             status_text
 
         )
-
 
         # =================================
         # ENVIRONMENT NAME
@@ -1014,7 +1117,6 @@ class Environment(QWidget):
             f"WORLD: {self.current_environment}"
 
         )
-
 
         # =================================
         # ERROR TEXT
@@ -1058,7 +1160,6 @@ class Environment(QWidget):
 
         )
 
-
         # =================================
         # LOCK INFORMATION
         # =================================
@@ -1094,7 +1195,6 @@ class Environment(QWidget):
                 "LOCK CONDITION: STABLE"
 
             )
-
 
         # =================================
         # CONTROLS
@@ -1167,7 +1267,9 @@ class Environment(QWidget):
 
     def keyPressEvent(self, event):
 
-        # 1 = SPACE
+        # =================================
+        # 1 = SPACE ENVIRONMENT
+        # =================================
 
         if event.key() == Qt.Key_1:
 
@@ -1176,7 +1278,9 @@ class Environment(QWidget):
             self.update()
 
 
-        # 2 = SKY
+        # =================================
+        # 2 = SKY ENVIRONMENT
+        # =================================
 
         elif event.key() == Qt.Key_2:
 
@@ -1185,7 +1289,9 @@ class Environment(QWidget):
             self.update()
 
 
-        # 3 = OCEAN
+        # =================================
+        # 3 = OCEAN ENVIRONMENT
+        # =================================
 
         elif event.key() == Qt.Key_3:
 
@@ -1194,7 +1300,9 @@ class Environment(QWidget):
             self.update()
 
 
+        # =================================
         # SPACE = PAUSE / RESUME
+        # =================================
 
         elif event.key() == Qt.Key_Space:
 
@@ -1205,11 +1313,15 @@ class Environment(QWidget):
             )
 
 
+        # =================================
         # R = RESET
+        # =================================
 
         elif event.key() == Qt.Key_R:
 
-            # Reset beacon
+            # =================================
+            # RESET BEACON
+            # =================================
 
             self.beacon.x = 300
             self.beacon.y = 200
@@ -1217,14 +1329,22 @@ class Environment(QWidget):
             self.beacon.vx = 2.5
             self.beacon.vy = 1.8
 
-            # Reset camera
+            # =================================
+            # RESET SKY SUN
+            # =================================
+
+            self.sky_sun_progress = 0.08
+
+            # =================================
+            # RESET CAMERA
+            # =================================
 
             self.camera.x = 250
             self.camera.y = 150
 
             self.camera.search_direction = 1
 
-            # Reset vertical direction if available
+            # Reset vertical direction
 
             if hasattr(
 
@@ -1236,7 +1356,9 @@ class Environment(QWidget):
 
                 self.camera.search_vertical_direction = 1
 
-            # Reset simulation state
+            # =================================
+            # RESET SIMULATION STATE
+            # =================================
 
             self.state = "SEARCHING"
 
