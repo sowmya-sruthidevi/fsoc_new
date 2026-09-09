@@ -138,7 +138,19 @@ class Environment(QWidget):
         # LOCK THRESHOLD
         # =================================
 
-        self.lock_threshold = 80.0
+        # =================================
+         # LOCK SETTINGS
+       # =================================
+
+       # Target must be close to center
+        self.lock_threshold = 15.0
+
+        # Number of frames required
+        # before final lock
+        self.lock_required_frames = 25
+
+        # Current stable tracking frames
+        self.lock_counter = 0
 
         # =================================
         # RUNNING
@@ -553,12 +565,15 @@ class Environment(QWidget):
 
         if self.state == "LOCKED":
 
-            self.lock_status = "LOCKED"
+          self.lock_status = "LOCKED"
+
+        elif self.state == "LOCKING":
+
+          self.lock_status = "LOCKING..."
 
         else:
 
-            self.lock_status = "NOT LOCKED"
-
+           self.lock_status = "NOT LOCKED"
         # =================================
         # UPDATE NORMAL STATE
         # =================================
@@ -577,23 +592,64 @@ class Environment(QWidget):
 
                 else:
 
-                    if (
+                    # =================================
+                    # TRACKING → LOCKING → LOCKED
+                    # =================================
 
-                        abs(self.error_x)
-                        <= self.lock_threshold
+                    if not self.target_visible:
 
-                        and
+                       self.state = "SEARCHING"
 
-                        abs(self.error_y)
-                        <= self.lock_threshold
+                        # Reset lock progress
+                       self.lock_counter = 0
 
-                    ):
-
-                        self.state = "LOCKED"
 
                     else:
 
-                        self.state = "TRACKING"
+                        # Target is close enough to center
+
+                      if (
+                         abs(self.error_x) <= self.lock_threshold
+                           and
+                        abs(self.error_y) <= self.lock_threshold
+                        ):
+
+                          # Increase lock stability counter
+
+                        self.lock_counter += 1
+
+
+                         # Still stabilizing
+
+                        if (
+                           self.lock_counter
+                              <
+                           self.lock_required_frames
+                            ):
+
+                           self.state = "LOCKING"
+
+
+                               # Lock completed
+
+                        else:
+
+                          self.state = "LOCKED"
+
+                          self.lock_counter = (
+                            self.lock_required_frames
+                              )
+
+
+        else:
+
+            # Target moved away from center
+
+              self.state = "TRACKING"
+
+                # Reset stabilization
+
+              self.lock_counter = 0
 
         # =================================
         # CLOUD MOVED AWAY
@@ -957,6 +1013,21 @@ class Environment(QWidget):
                 200,
                 255
             )
+        elif self.state == "LOCKING":
+
+             status_text = "LOCKING TARGET..."
+
+             status_color = QColor(
+              255,
+             210,
+             0
+            )
+
+             camera_color = QColor(
+             255,
+             210,
+              0
+           )
 
         elif self.state == "LOCKED":
 
