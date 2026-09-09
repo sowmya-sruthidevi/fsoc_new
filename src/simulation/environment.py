@@ -71,13 +71,17 @@ class Environment(QWidget):
         # SKY SUN MOVEMENT
         # =================================
 
-        # 0 = left side
-        # 1 = right side
         self.sky_sun_progress = 0.08
 
-        # Speed of sun movement
-        # Smaller value = slower movement
         self.sky_sun_speed = 0.00025
+
+        # =================================
+        # SUN OCCLUSION
+        # =================================
+
+        self.sun_occluded = False
+
+        self.previous_sun_occluded = False
 
         # =================================
         # CREATE TARGET
@@ -148,7 +152,6 @@ class Environment(QWidget):
             self.update_simulation
         )
 
-        # Approximately 60 FPS
         self.timer.start(16)
 
 
@@ -195,8 +198,6 @@ class Environment(QWidget):
 
         if self.current_environment == "SPACE":
 
-            # Normal beacon movement
-
             self.beacon.update(
                 self.width(),
                 self.height()
@@ -206,42 +207,39 @@ class Environment(QWidget):
         elif self.current_environment == "SKY":
 
             # =================================
-            # REALISTIC SLOW SUN MOVEMENT
+            # SLOW SUN MOVEMENT
             # =================================
 
-            # Slowly increase sun progress
             self.sky_sun_progress += (
                 self.sky_sun_speed
             )
 
             # =================================
-            # SUN REACHES END OF SKY
+            # SUN REACHES END
             # =================================
 
             if self.sky_sun_progress >= 1.0:
 
-                # Restart from left side
                 self.sky_sun_progress = 0.0
 
-                # Target was lost
                 self.state = "SEARCHING"
 
                 self.target_visible = False
                 self.previous_visible = False
 
+                self.sun_occluded = False
+                self.previous_sun_occluded = False
+
             # =================================
             # SUN HORIZONTAL MOVEMENT
             # =================================
 
-            # Sun moves from left to right
-
-            start_x = (
-                -self.beacon.radius
-            )
+            start_x = -self.beacon.radius
 
             end_x = (
                 self.width()
-                + self.beacon.radius
+                +
+                self.beacon.radius
             )
 
             self.beacon.x = (
@@ -263,11 +261,6 @@ class Environment(QWidget):
             # =================================
             # SUN CURVED PATH
             # =================================
-
-            # Sun starts lower
-            # Moves upward
-            # Reaches highest point
-            # Slowly moves downward
 
             horizon_y = (
                 self.height() * 0.38
@@ -293,9 +286,6 @@ class Environment(QWidget):
 
             )
 
-            # Subtract because screen Y
-            # increases downward
-
             self.beacon.y = (
 
                 horizon_y
@@ -305,7 +295,7 @@ class Environment(QWidget):
             )
 
             # =================================
-            # KEEP SUN INSIDE SAFE AREA
+            # KEEP SUN INSIDE SCREEN
             # =================================
 
             self.beacon.y = max(
@@ -326,21 +316,44 @@ class Environment(QWidget):
 
             )
 
+            # =================================
+            # CHECK CLOUD OCCLUSION
+            # =================================
+
+            self.sun_occluded = (
+
+                self.sky_environment.check_sun_occlusion(
+
+                    self.beacon.x,
+
+                    self.beacon.y,
+
+                    sun_radius=25
+
+                )
+
+            )
+
 
         elif self.current_environment == "OCEAN":
-
-            # Normal UAV / target movement
 
             self.beacon.update(
                 self.width(),
                 self.height()
             )
 
+            self.sun_occluded = False
+
+
+        else:
+
+            self.sun_occluded = False
+
         # =================================
-        # CHECK TARGET VISIBILITY
+        # CHECK CAMERA VISIBILITY
         # =================================
 
-        self.target_visible = (
+        camera_can_see_target = (
 
             self.camera.is_target_visible(
 
@@ -352,37 +365,89 @@ class Environment(QWidget):
         )
 
         # =================================
-        # STATE TRANSITIONS
+        # FINAL TARGET VISIBILITY
+        # =================================
+
+        # In SKY environment:
+        # Even if the camera points correctly,
+        # the target is not visible when a
+        # cloud blocks the sun.
+
+        if (
+
+            self.current_environment == "SKY"
+
+            and
+
+            self.sun_occluded
+
+        ):
+
+            self.target_visible = False
+
+        else:
+
+            self.target_visible = (
+                camera_can_see_target
+            )
+
+        # =================================
+        # CLOUD OCCLUSION STATE
         # =================================
 
         if (
 
-            self.target_visible
+            self.current_environment == "SKY"
 
             and
 
-            not self.previous_visible
+            self.sun_occluded
 
         ):
 
-            self.state = "ACQUIRED"
+            # Cloud naturally blocks the sun
 
-            self.state_counter = 60
+            self.state = "OCCLUDED"
 
+            self.state_counter = 0
 
-        elif (
+        else:
 
-            not self.target_visible
+            # =================================
+            # TARGET ACQUIRED
+            # =================================
 
-            and
+            if (
 
-            self.previous_visible
+                self.target_visible
 
-        ):
+                and
 
-            self.state = "LOST"
+                not self.previous_visible
 
-            self.state_counter = 60
+            ):
+
+                self.state = "ACQUIRED"
+
+                self.state_counter = 60
+
+            # =================================
+            # TARGET LOST
+            # =================================
+
+            elif (
+
+                not self.target_visible
+
+                and
+
+                self.previous_visible
+
+            ):
+
+                self.state = "LOST"
+
+                self.state_counter = 60
 
         # =================================
         # CAMERA BEHAVIOR
@@ -390,9 +455,7 @@ class Environment(QWidget):
 
         if self.target_visible:
 
-            # =================================
-            # CALCULATE TRACKING ERROR
-            # =================================
+            # Calculate error
 
             self.error_x, self.error_y = (
 
@@ -405,9 +468,7 @@ class Environment(QWidget):
 
             )
 
-            # =================================
-            # CONTROLLER MOVEMENT
-            # =================================
+            # Controller movement
 
             move_x, move_y = (
 
@@ -420,9 +481,7 @@ class Environment(QWidget):
 
             )
 
-            # =================================
-            # MOVE CAMERA
-            # =================================
+            # Move camera
 
             self.camera.move(
 
@@ -437,15 +496,22 @@ class Environment(QWidget):
         else:
 
             # =================================
-            # SEARCH FOR TARGET
+            # SEARCH ONLY WHEN NOT OCCLUDED
             # =================================
 
-            self.camera.search(
+            # When the cloud blocks the sun,
+            # the camera should not immediately
+            # behave as if the target vanished
+            # permanently.
 
-                self.width(),
-                self.height()
+            if self.state != "OCCLUDED":
 
-            )
+                self.camera.search(
+
+                    self.width(),
+                    self.height()
+
+                )
 
         # =================================
         # RECALCULATE ERROR
@@ -463,47 +529,75 @@ class Environment(QWidget):
         )
 
         # =================================
-        # UPDATE STATE
+        # UPDATE NORMAL STATE
         # =================================
 
-        if self.state_counter > 0:
+        if self.state != "OCCLUDED":
 
-            self.state_counter -= 1
+            if self.state_counter > 0:
 
-        else:
-
-            if not self.target_visible:
-
-                self.state = "SEARCHING"
+                self.state_counter -= 1
 
             else:
 
-                if (
+                if not self.target_visible:
 
-                    abs(self.error_x)
-                    <= self.lock_threshold
-
-                    and
-
-                    abs(self.error_y)
-                    <= self.lock_threshold
-
-                ):
-
-                    self.state = "LOCKED"
+                    self.state = "SEARCHING"
 
                 else:
 
-                    self.state = "TRACKING"
+                    if (
+
+                        abs(self.error_x)
+                        <= self.lock_threshold
+
+                        and
+
+                        abs(self.error_y)
+                        <= self.lock_threshold
+
+                    ):
+
+                        self.state = "LOCKED"
+
+                    else:
+
+                        self.state = "TRACKING"
 
         # =================================
-        # SAVE PREVIOUS VISIBILITY
+        # CLOUD JUST MOVED AWAY
+        # =================================
+
+        if (
+
+            self.previous_sun_occluded
+
+            and
+
+            not self.sun_occluded
+
+            and
+
+            self.current_environment == "SKY"
+
+        ):
+
+            if camera_can_see_target:
+
+                self.state = "ACQUIRED"
+
+                self.state_counter = 60
+
+        # =================================
+        # SAVE PREVIOUS STATUS
         # =================================
 
         self.previous_visible = (
-
             self.target_visible
+        )
 
+        self.previous_sun_occluded = (
+            self.sun_occluded
         )
 
         # =================================
@@ -633,10 +727,6 @@ class Environment(QWidget):
 
         ) / 2
 
-        # =================================
-        # BEACON GLOW
-        # =================================
-
         glow_radius = (
 
             self.beacon.radius
@@ -699,9 +789,7 @@ class Environment(QWidget):
 
         )
 
-        # =================================
-        # MAIN BEACON
-        # =================================
+        # Main beacon
 
         painter.setBrush(
 
@@ -759,7 +847,7 @@ class Environment(QWidget):
         painter = QPainter(self)
 
         # =================================
-        # DRAW ENVIRONMENT
+        # DRAW ENVIRONMENT BACKGROUND
         # =================================
 
         if self.current_environment == "SPACE":
@@ -767,7 +855,6 @@ class Environment(QWidget):
             self.draw_space_background(
                 painter
             )
-
 
         elif self.current_environment == "SKY":
 
@@ -780,7 +867,6 @@ class Environment(QWidget):
                 self.height()
 
             )
-
 
         elif self.current_environment == "OCEAN":
 
@@ -845,6 +931,19 @@ class Environment(QWidget):
                 180,
                 80,
                 255
+            )
+
+            camera_color = status_color
+
+
+        elif self.state == "OCCLUDED":
+
+            status_text = "TARGET OCCLUDED"
+
+            status_color = QColor(
+                255,
+                120,
+                0
             )
 
             camera_color = status_color
@@ -931,8 +1030,6 @@ class Environment(QWidget):
             center_pen
         )
 
-        # Horizontal center line
-
         painter.drawLine(
 
             int(center_x - 20),
@@ -944,8 +1041,6 @@ class Environment(QWidget):
             int(center_y)
 
         )
-
-        # Vertical center line
 
         painter.drawLine(
 
@@ -969,8 +1064,9 @@ class Environment(QWidget):
                 painter
             )
 
-
         elif self.current_environment == "SKY":
+
+            # Draw sun first
 
             self.sky_environment.draw_sun_target(
 
@@ -984,6 +1080,18 @@ class Environment(QWidget):
 
             )
 
+            # ---------------------------------
+            # DRAW CLOUDS IN FRONT OF SUN
+            # ---------------------------------
+
+            # This is what visually makes the
+            # cloud cover the sun.
+
+            self.sky_environment.draw_foreground_clouds(
+
+                painter
+
+            )
 
         elif self.current_environment == "OCEAN":
 
@@ -1161,10 +1269,46 @@ class Environment(QWidget):
         )
 
         # =================================
+        # OCCLUSION INFORMATION
+        # =================================
+
+        if self.state == "OCCLUDED":
+
+            painter.setPen(
+
+                QColor(
+                    255,
+                    120,
+                    0
+                )
+
+            )
+
+            info_font = QFont()
+
+            info_font.setPointSize(11)
+
+            info_font.setBold(True)
+
+            painter.setFont(
+                info_font
+            )
+
+            painter.drawText(
+
+                30,
+
+                115,
+
+                "SIGNAL BLOCKED BY CLOUD"
+
+            )
+
+        # =================================
         # LOCK INFORMATION
         # =================================
 
-        if self.state == "LOCKED":
+        elif self.state == "LOCKED":
 
             painter.setPen(
 
@@ -1275,6 +1419,8 @@ class Environment(QWidget):
 
             self.current_environment = "SPACE"
 
+            self.sun_occluded = False
+
             self.update()
 
 
@@ -1296,6 +1442,8 @@ class Environment(QWidget):
         elif event.key() == Qt.Key_3:
 
             self.current_environment = "OCEAN"
+
+            self.sun_occluded = False
 
             self.update()
 
@@ -1319,9 +1467,7 @@ class Environment(QWidget):
 
         elif event.key() == Qt.Key_R:
 
-            # =================================
-            # RESET BEACON
-            # =================================
+            # Reset beacon
 
             self.beacon.x = 300
             self.beacon.y = 200
@@ -1329,22 +1475,19 @@ class Environment(QWidget):
             self.beacon.vx = 2.5
             self.beacon.vy = 1.8
 
-            # =================================
-            # RESET SKY SUN
-            # =================================
+            # Reset sun
 
             self.sky_sun_progress = 0.08
 
-            # =================================
-            # RESET CAMERA
-            # =================================
+            self.sun_occluded = False
+            self.previous_sun_occluded = False
+
+            # Reset camera
 
             self.camera.x = 250
             self.camera.y = 150
 
             self.camera.search_direction = 1
-
-            # Reset vertical direction
 
             if hasattr(
 
@@ -1356,9 +1499,7 @@ class Environment(QWidget):
 
                 self.camera.search_vertical_direction = 1
 
-            # =================================
-            # RESET SIMULATION STATE
-            # =================================
+            # Reset simulation state
 
             self.state = "SEARCHING"
 
