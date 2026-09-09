@@ -84,6 +84,40 @@ class Environment(QWidget):
         pause_action.triggered.connect(self.toggle_pause)
         simulation_menu.addAction(pause_action)
 
+        simulation_menu.addSeparator()
+
+        # =================================
+        # DISTURBANCE MODE SUBMENU
+        # =================================
+
+        disturbance_menu = simulation_menu.addMenu("Disturbance Mode")
+
+        camera_disturbance_action = QAction("Camera Disturbance", self)
+        camera_disturbance_action.triggered.connect(
+            lambda: self.set_disturbance_mode("CAMERA")
+        )
+        disturbance_menu.addAction(camera_disturbance_action)
+
+        beacon_disturbance_action = QAction("Beacon Disturbance", self)
+        beacon_disturbance_action.triggered.connect(
+            lambda: self.set_disturbance_mode("BEACON")
+        )
+        disturbance_menu.addAction(beacon_disturbance_action)
+
+        both_disturbance_action = QAction("Both Disturbance", self)
+        both_disturbance_action.triggered.connect(
+            lambda: self.set_disturbance_mode("BOTH")
+        )
+        disturbance_menu.addAction(both_disturbance_action)
+
+        disturbance_menu.addSeparator()
+
+        no_disturbance_action = QAction("No Disturbance", self)
+        no_disturbance_action.triggered.connect(
+            lambda: self.set_disturbance_mode("OFF")
+        )
+        disturbance_menu.addAction(no_disturbance_action)
+
         controls_action = QAction("Keyboard Controls", self)
         controls_action.triggered.connect(self.show_controls)
         help_menu.addAction(controls_action)
@@ -235,6 +269,27 @@ class Environment(QWidget):
         self.is_running = True
 
         # =================================
+        # DISTURBANCE MODEL
+        # =================================
+
+        # Simulates platform vibration, slow drift, and small random
+        # pointing disturbances that make FSOC tracking more realistic.
+        # Disturbance test modes:
+        # CAMERA = camera moves, beacon stays fixed
+        # BEACON = beacon moves, camera stays fixed
+        # BOTH   = camera and beacon move independently
+        # OFF    = normal simulation/tracking
+        self.disturbance_mode = "CAMERA"
+        self.disturbances_enabled = True
+
+        # Strong enough to be clearly visible in the simulation.
+        self.disturbance_strength = 3.0
+
+        # Fixed target position used by camera-disturbance tests.
+        self.disturbance_beacon_x = self.beacon.x
+        self.disturbance_beacon_y = self.beacon.y
+
+        # =================================
         # TIMER
         # =================================
 
@@ -265,6 +320,27 @@ class Environment(QWidget):
         self.is_running = not self.is_running
         self.setFocus()
 
+    def set_disturbance_mode(self, mode):
+        self.disturbance_mode = mode
+        self.disturbances_enabled = (mode != "OFF")
+
+        # Capture the current target when entering CAMERA mode so the
+        # beacon remains fixed while the camera is disturbed.
+        if mode == "CAMERA":
+            self.disturbance_beacon_x = self.beacon.x
+            self.disturbance_beacon_y = self.beacon.y
+
+        self.setFocus()
+        self.update()
+
+    def toggle_disturbances(self):
+        # Keep the old D shortcut working.
+        if self.disturbances_enabled:
+            self.set_disturbance_mode("OFF")
+        else:
+            self.set_disturbance_mode("CAMERA")
+
+
     def reset_simulation(self):
         self.beacon.x = 300
         self.beacon.y = 200
@@ -292,6 +368,10 @@ class Environment(QWidget):
         self.lock_status = "NOT LOCKED"
         self.state_counter = 0
         self.lock_counter = 0
+        self.disturbance_mode = "CAMERA"
+        self.disturbances_enabled = True
+        self.disturbance_beacon_x = self.beacon.x
+        self.disturbance_beacon_y = self.beacon.y
 
         self.confidence_history.clear()
         self.error_x_history.clear()
@@ -302,6 +382,7 @@ class Environment(QWidget):
         self.update()
 
     def show_controls(self):
+        # Controls are intentionally kept in the header menu/shortcuts.
         self.setFocus()
         self.update()
 
@@ -346,10 +427,17 @@ class Environment(QWidget):
 
         if self.current_environment == "SPACE":
 
-            self.beacon.update(
-                self.width(),
-                self.height()
-            )
+            if self.disturbance_mode in ("CAMERA", "BOTH"):
+                # In CAMERA mode the beacon is deliberately fixed.
+                # In BOTH mode its own disturbance is applied below.
+                if self.disturbance_mode == "CAMERA":
+                    self.beacon.x = self.disturbance_beacon_x
+                    self.beacon.y = self.disturbance_beacon_y
+            else:
+                self.beacon.update(
+                    self.width(),
+                    self.height()
+                )
 
             self.sun_occluded = False
 
@@ -461,10 +549,15 @@ class Environment(QWidget):
 
         elif self.current_environment == "OCEAN":
 
-            self.beacon.update(
-                self.width(),
-                self.height()
-            )
+            if self.disturbance_mode in ("CAMERA", "BOTH"):
+                if self.disturbance_mode == "CAMERA":
+                    self.beacon.x = self.disturbance_beacon_x
+                    self.beacon.y = self.disturbance_beacon_y
+            else:
+                self.beacon.update(
+                    self.width(),
+                    self.height()
+                )
 
             self.sun_occluded = False
 
@@ -582,33 +675,37 @@ class Environment(QWidget):
 
             )
 
-            # Controller movement
+            # In BEACON/BOTH disturbance test modes the camera is held
+            # stable so the disturbance itself can be observed clearly.
+            if self.disturbance_mode not in ("BEACON", "BOTH"):
 
-            move_x, move_y = (
+                # Controller movement
 
-                self.controller.calculate_movement(
+                move_x, move_y = (
 
-                    self.error_x,
+                    self.controller.calculate_movement(
 
-                    self.error_y
+                        self.error_x,
+
+                        self.error_y
+
+                    )
 
                 )
 
-            )
+                # Move camera
 
-            # Move camera
+                self.camera.move(
 
-            self.camera.move(
+                    move_x,
 
-                move_x,
+                    move_y,
 
-                move_y,
+                    self.width(),
 
-                self.width(),
+                    self.height()
 
-                self.height()
-
-            )
+                )
 
         else:
 
@@ -624,6 +721,66 @@ class Environment(QWidget):
                     self.height()
 
                 )
+
+        # =================================
+        # APPLY SELECTED DISTURBANCE
+        # =================================
+
+        if self.disturbances_enabled:
+
+            # Smooth platform drift + vibration + random jitter.
+            camera_dx = (
+                math.sin(self.animation_time * 0.75) * 1.6
+                + math.sin(self.animation_time * 0.31) * 0.9
+                + math.sin(self.animation_time * 7.0) * 2.8
+                + math.sin(self.animation_time * 13.0) * 1.4
+                + random.uniform(-1.8, 1.8)
+            ) * self.disturbance_strength
+
+            camera_dy = (
+                math.sin(self.animation_time * 0.58 + 1.2) * 1.4
+                + math.sin(self.animation_time * 0.27) * 0.7
+                + math.sin(self.animation_time * 8.5 + 0.8) * 2.4
+                + math.sin(self.animation_time * 15.0) * 1.2
+                + random.uniform(-1.6, 1.6)
+            ) * self.disturbance_strength
+
+            # Independent beacon disturbance uses different frequencies
+            # and random components, so camera and beacon do not move
+            # in the same pattern.
+            beacon_dx = (
+                math.sin(self.animation_time * 0.43 + 2.0) * 2.0
+                + math.sin(self.animation_time * 5.5) * 2.6
+                + random.uniform(-1.5, 1.5)
+            ) * self.disturbance_strength
+
+            beacon_dy = (
+                math.sin(self.animation_time * 0.37 + 0.7) * 1.8
+                + math.sin(self.animation_time * 6.7 + 1.5) * 2.2
+                + random.uniform(-1.4, 1.4)
+            ) * self.disturbance_strength
+
+            if self.disturbance_mode in ("CAMERA", "BOTH"):
+                self.camera.x += camera_dx
+                self.camera.y += camera_dy
+
+            if self.disturbance_mode in ("BEACON", "BOTH"):
+                # Start from the current target and apply an independent
+                # disturbance every frame. Clamp it to the world.
+                self.beacon.x += beacon_dx
+                self.beacon.y += beacon_dy
+
+            # Keep camera inside the simulation world.
+            max_x = max(0, self.width() - self.camera.width)
+            max_y = max(0, self.height() - self.camera.height)
+
+            self.camera.x = max(0, min(self.camera.x, max_x))
+            self.camera.y = max(0, min(self.camera.y, max_y))
+
+            # Keep beacon inside the simulation world.
+            radius = getattr(self.beacon, "radius", 10)
+            self.beacon.x = max(radius, min(self.beacon.x, self.width() - radius))
+            self.beacon.y = max(radius, min(self.beacon.y, self.height() - radius))
 
         # =================================
         # RECALCULATE ERROR
@@ -2219,6 +2376,47 @@ class Environment(QWidget):
         )
 
         # =================================
+        # DISTURBANCE STATUS
+        # =================================
+
+        painter.setPen(label_color)
+
+        painter.drawText(
+
+            panel_x + 20,
+
+            panel_y + 255,
+
+            "Disturbance:"
+
+        )
+
+        disturbance_color = (
+            QColor(255, 170, 0)
+            if self.disturbances_enabled
+            else QColor(120, 220, 140)
+        )
+
+        painter.setPen(disturbance_color)
+
+        mode_label = {
+            "CAMERA": "CAMERA",
+            "BEACON": "BEACON",
+            "BOTH": "BOTH",
+            "OFF": "OFF"
+        }.get(self.disturbance_mode, "OFF")
+
+        painter.drawText(
+
+            panel_x + 110,
+
+            panel_y + 255,
+
+            mode_label
+
+        )
+
+        # =================================
         # OCCLUSION MESSAGE
         # =================================
 
@@ -2356,6 +2554,34 @@ class Environment(QWidget):
             )
 
         # =================================
+        # DISTURBANCES
+        # =================================
+
+        elif event.key() == Qt.Key_D:
+
+            self.toggle_disturbances()
+
+        # =================================
+        # DISTURBANCE MODES
+        # =================================
+
+        elif event.key() == Qt.Key_C:
+
+            self.set_disturbance_mode("CAMERA")
+
+        elif event.key() == Qt.Key_B:
+
+            self.set_disturbance_mode("BEACON")
+
+        elif event.key() == Qt.Key_X:
+
+            self.set_disturbance_mode("BOTH")
+
+        elif event.key() == Qt.Key_N:
+
+            self.set_disturbance_mode("OFF")
+
+        # =================================
         # RESET
         # =================================
 
@@ -2415,6 +2641,11 @@ class Environment(QWidget):
 
             self.state_counter = 0
             self.lock_counter = 0
+
+            self.disturbance_mode = "CAMERA"
+            self.disturbances_enabled = True
+            self.disturbance_beacon_x = self.beacon.x
+            self.disturbance_beacon_y = self.beacon.y
 
             # Reset graph history
             self.confidence_history.clear()
