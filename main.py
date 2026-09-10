@@ -2,20 +2,19 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from src.simulation.environment import Environment
+from home import HomeWindow
 
 
 def main():
-
     app = QApplication(sys.argv)
 
-    window = Environment()
+    window = HomeWindow()
 
     window.setWindowTitle(
         "FSOC Virtual Camera Tracking System"
     )
 
-    window.show()
+    window.showMaximized()
 
     sys.exit(app.exec())
 

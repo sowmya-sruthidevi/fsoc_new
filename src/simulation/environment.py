@@ -73,13 +73,19 @@ class Environment(QWidget):
                 background-color: #2b3038;
             }
         """)
-
+      
         file_menu = self.menu_bar.addMenu("File")
         mode_menu = self.menu_bar.addMenu("Mode")
         simulation_menu = self.menu_bar.addMenu("Simulation")
         help_menu = self.menu_bar.addMenu("Help")
 
         ai_menu = self.menu_bar.addMenu("AI")
+
+        # Home button
+        home_action = QAction("Home", self)
+        home_action.triggered.connect(self.go_home)
+        self.menu_bar.addAction(home_action)
+
         action = QAction("Start Dataset Collection", self)
         action.triggered.connect(self.start_dataset_collection)
         ai_menu.addAction(action)
@@ -696,100 +702,121 @@ class Environment(QWidget):
 
         # -------------------------------------------------------------
         # BEACON DETECTION
-        # Detect a compact, saturated optical point rather than general
-        # bright areas such as faces, walls or reflections.
+        # Prefer the trained YOLO beacon model when it is loaded.
+        # Keep the existing OpenCV detector as a fallback so existing
+        # functionality is not lost when no YOLO model is selected.
         # -------------------------------------------------------------
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-
-        # Use a very high threshold for an optical beacon.  A second
-        # adaptive threshold catches slightly dimmer frames without
-        # allowing ordinary room lighting to dominate.
-        peak_gray = float(gray.max())
-        threshold_value = 250 if peak_gray >= 252 else 245
-        _, thresh = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-
-        contours, _ = cv2.findContours(
-            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
         best = None
-        best_score = -1.0
         frame_area = float(max(1, self.live_frame_width * self.live_frame_height))
-        ref_x, ref_y = self.live_last_seen_x, self.live_last_seen_y
 
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < 1.0 or area > frame_area * 0.025:
-                continue
+        if self.yolo_model is not None:
+            try:
+                results = self.yolo_model.predict(
+                    source=frame,
+                    conf=0.25,
+                    verbose=False
+                )
+                if results and results[0].boxes is not None:
+                    boxes = results[0].boxes
+                    best_conf = -1.0
+                    for i in range(len(boxes)):
+                        conf = float(boxes.conf[i].item())
+                        if boxes.cls is not None:
+                            cls_id = int(boxes.cls[i].item())
+                            if cls_id != 0:
+                                continue
+                        x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy().tolist()
+                        x1 = max(0, min(int(x1), self.live_frame_width - 1))
+                        y1 = max(0, min(int(y1), self.live_frame_height - 1))
+                        x2 = max(x1 + 1, min(int(x2), self.live_frame_width))
+                        y2 = max(y1 + 1, min(int(y2), self.live_frame_height))
+                        w = x2 - x1
+                        h = y2 - y1
+                        if conf > best_conf:
+                            best_conf = conf
+                            best = (x1, y1, w, h, float(w * h), conf)
+            except Exception:
+                # If YOLO inference fails for a frame, use the existing
+                # detector below rather than breaking live tracking.
+                best = None
 
-            x, y, w, h = cv2.boundingRect(contour)
-            if w < 1 or h < 1:
-                continue
-            if w > self.live_frame_width * 0.12 or h > self.live_frame_height * 0.12:
-                continue
-
-            roi_gray = gray[y:y+h, x:x+w]
-            roi_bgr = frame[y:y+h, x:x+w]
-            if roi_gray.size == 0 or roi_bgr.size == 0:
-                continue
-
-            peak = float(roi_gray.max())
-            mean_brightness = float(roi_gray.mean())
-            min_channel = float(roi_bgr.min(axis=2).mean())
-            max_channel = float(roi_bgr.max(axis=2).mean())
-            white_ratio = min_channel / max(1.0, max_channel)
-
-            # A real optical beacon is usually a small, intense white
-            # source. Reject candidates that are large/soft or strongly
-            # colored.
-            compactness = area / max(1.0, float(w * h))
-            perimeter = cv2.arcLength(contour, True)
-            circularity = (4.0 * math.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
-
-            if peak < 245 or white_ratio < 0.68:
-                continue
-
-            # Estimate local contrast against a small surrounding ring.
-            pad = max(3, int(max(w, h) * 2))
-            x0, y0 = max(0, x - pad), max(0, y - pad)
-            x1 = min(self.live_frame_width, x + w + pad)
-            y1 = min(self.live_frame_height, y + h + pad)
-            surround = gray[y0:y1, x0:x1]
-            local_mean = float(surround.mean()) if surround.size else 0.0
-            contrast = max(0.0, peak - local_mean)
-
-            score = (
-                peak * 0.35
-                + min(255.0, contrast) * 0.35
-                + min(255.0, mean_brightness) * 0.10
-                + white_ratio * 100.0 * 0.10
-                + min(1.0, compactness * 2.0) * 100.0 * 0.05
-                + min(1.0, circularity * 2.0) * 100.0 * 0.05
+        if best is None and self.yolo_model is None:
+            # Existing OpenCV fallback detector.
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.GaussianBlur(gray, (3, 3), 0)
+            peak_gray = float(gray.max())
+            threshold_value = 250 if peak_gray >= 252 else 245
+            _, thresh = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+            contours, _ = cv2.findContours(
+                thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
 
-            if ref_x is not None and ref_y is not None:
-                cx0, cy0 = x + w / 2.0, y + h / 2.0
-                jump = math.hypot(cx0 - ref_x, cy0 - ref_y)
-                max_jump = max(55.0, min(self.live_frame_width, self.live_frame_height) * 0.28)
-                proximity = math.exp(-jump / max_jump)
-                score *= 0.18 + 0.82 * proximity
-
-            if score > best_score:
-                best_score = score
-                best = (x, y, w, h, area, contrast, white_ratio)
+            best_score = -1.0
+            ref_x, ref_y = self.live_last_seen_x, self.live_last_seen_y
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < 1.0 or area > frame_area * 0.025:
+                    continue
+                x, y, w, h = cv2.boundingRect(contour)
+                if w < 1 or h < 1:
+                    continue
+                if w > self.live_frame_width * 0.12 or h > self.live_frame_height * 0.12:
+                    continue
+                roi_gray = gray[y:y+h, x:x+w]
+                roi_bgr = frame[y:y+h, x:x+w]
+                if roi_gray.size == 0 or roi_bgr.size == 0:
+                    continue
+                peak = float(roi_gray.max())
+                mean_brightness = float(roi_gray.mean())
+                min_channel = float(roi_bgr.min(axis=2).mean())
+                max_channel = float(roi_bgr.max(axis=2).mean())
+                white_ratio = min_channel / max(1.0, max_channel)
+                compactness = area / max(1.0, float(w * h))
+                perimeter = cv2.arcLength(contour, True)
+                circularity = (4.0 * math.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
+                if peak < 245 or white_ratio < 0.68:
+                    continue
+                pad = max(3, int(max(w, h) * 2))
+                x0, y0 = max(0, x - pad), max(0, y - pad)
+                x1 = min(self.live_frame_width, x + w + pad)
+                y1 = min(self.live_frame_height, y + h + pad)
+                surround = gray[y0:y1, x0:x1]
+                local_mean = float(surround.mean()) if surround.size else 0.0
+                contrast = max(0.0, peak - local_mean)
+                score = (
+                    peak * 0.35
+                    + min(255.0, contrast) * 0.35
+                    + min(255.0, mean_brightness) * 0.10
+                    + white_ratio * 100.0 * 0.10
+                    + min(1.0, compactness * 2.0) * 100.0 * 0.05
+                    + min(1.0, circularity * 2.0) * 100.0 * 0.05
+                )
+                if ref_x is not None and ref_y is not None:
+                    cx0, cy0 = x + w / 2.0, y + h / 2.0
+                    jump = math.hypot(cx0 - ref_x, cy0 - ref_y)
+                    max_jump = max(55.0, min(self.live_frame_width, self.live_frame_height) * 0.28)
+                    proximity = math.exp(-jump / max_jump)
+                    score *= 0.18 + 0.82 * proximity
+                if score > best_score:
+                    best_score = score
+                    best = (x, y, w, h, area, contrast, white_ratio)
 
         self.live_target_found = best is not None
 
         if best is not None:
-            x, y, w, h, area, beacon_contrast, beacon_white_ratio = best
+            if len(best) == 6:
+                x, y, w, h, area, yolo_confidence = best
+                beacon_contrast = 255.0 * yolo_confidence
+                beacon_white_ratio = 1.0
+            else:
+                x, y, w, h, area, beacon_contrast, beacon_white_ratio = best
+                yolo_confidence = min(1.0, max(0.0, beacon_contrast / 255.0))
             raw_x = x + w / 2.0
             raw_y = y + h / 2.0
             self._save_ai_training_sample(
-                frame, (x, y, w, h), min(1.0, best_score / 255.0),
+                frame, (x, y, w, h), yolo_confidence,
                 "live", self.live_frame_index
             )
 
@@ -845,9 +872,12 @@ class Environment(QWidget):
 
             # Confidence combines beacon quality and alignment.
             area_conf = min(1.0, area / max(3.0, frame_area * 0.00035))
-            contrast_conf = min(1.0, beacon_contrast / 180.0)
-            whiteness_conf = min(1.0, beacon_white_ratio / 0.90)
-            beacon_quality = 0.45 * area_conf + 0.35 * contrast_conf + 0.20 * whiteness_conf
+            if self.yolo_model is not None:
+                beacon_quality = 0.75 * yolo_confidence + 0.25 * area_conf
+            else:
+                contrast_conf = min(1.0, beacon_contrast / 180.0)
+                whiteness_conf = min(1.0, beacon_white_ratio / 0.90)
+                beacon_quality = 0.45 * area_conf + 0.35 * contrast_conf + 0.20 * whiteness_conf
             center_distance = math.hypot(
                 self.live_target_x - self.live_camera_x,
                 self.live_target_y - self.live_camera_y
@@ -952,50 +982,106 @@ class Environment(QWidget):
             QImage.Format_RGB888
         ).copy()
 
-        # Generic beacon detector: find the brightest compact region.
-        # This works well for a visible/bright optical beacon without
-        # requiring a trained model for the first video-input stage.
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (7, 7), 0)
-        _, threshold = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(
-            threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
+        # Beacon detector.
+        # If a trained YOLO model has been loaded, use it for the video.
+        # The previous brightness/contour detector is kept as a fallback so
+        # existing video tracking still works when YOLO is disabled/not loaded.
         best = None
-        best_score = -1.0
         frame_area = float(max(1, self.video_frame_width * self.video_frame_height))
 
-        # Once the beacon has been acquired, prefer bright candidates near
-        # the previous beacon position. This prevents a bright wall/phone
-        # reflection from stealing the tracker after a few frames.
-        reference_x = self.video_last_seen_x
-        reference_y = self.video_last_seen_y
+        if self.yolo_model is not None:
+            try:
+                results = self.yolo_model.predict(
+                    source=frame,
+                    conf=0.25,
+                    verbose=False
+                )
 
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < 3 or area > frame_area * 0.05:
-                continue
-            x, y, w, h = cv2.boundingRect(contour)
-            if w > self.video_frame_width * 0.35 or h > self.video_frame_height * 0.35:
-                continue
+                if results and results[0].boxes is not None:
+                    boxes = results[0].boxes
+                    best_conf = -1.0
+                    reference_x = self.video_last_seen_x
+                    reference_y = self.video_last_seen_y
 
-            cx = x + w / 2.0
-            cy = y + h / 2.0
-            brightness = float(gray[y:y+h, x:x+w].mean())
-            base_score = area * brightness
+                    for i in range(len(boxes)):
+                        conf = float(boxes.conf[i].item()) if boxes.conf is not None else 0.0
+                        class_id = int(boxes.cls[i].item()) if boxes.cls is not None else 0
 
-            if reference_x is not None and reference_y is not None:
-                jump = math.hypot(cx - reference_x, cy - reference_y)
-                # Strongly penalize implausibly large frame-to-frame jumps.
-                motion_score = math.exp(-jump / max(30.0, min(self.video_frame_width, self.video_frame_height) * 0.18))
-                score = base_score * (0.35 + 0.65 * motion_score)
-            else:
-                score = base_score
+                        # The beacon dataset uses class 0 = beacon.
+                        if class_id != 0 or conf < 0.25:
+                            continue
 
-            if score > best_score:
-                best_score = score
-                best = (x, y, w, h, area)
+                        x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy().tolist()
+                        x1 = max(0, min(int(round(x1)), self.video_frame_width - 1))
+                        y1 = max(0, min(int(round(y1)), self.video_frame_height - 1))
+                        x2 = max(x1 + 1, min(int(round(x2)), self.video_frame_width))
+                        y2 = max(y1 + 1, min(int(round(y2)), self.video_frame_height))
+
+                        w = x2 - x1
+                        h = y2 - y1
+                        area = float(w * h)
+                        cx = x1 + w / 2.0
+                        cy = y1 + h / 2.0
+
+                        # Prefer the highest-confidence detection. When a
+                        # previous target exists, give a small preference to
+                        # detections that remain close to it.
+                        score = conf
+                        if reference_x is not None and reference_y is not None:
+                            jump = math.hypot(cx - reference_x, cy - reference_y)
+                            motion_score = math.exp(
+                                -jump / max(30.0, min(self.video_frame_width, self.video_frame_height) * 0.18)
+                            )
+                            score = conf * (0.35 + 0.65 * motion_score)
+
+                        if score > best_conf:
+                            best_conf = score
+                            best = (x1, y1, w, h, area)
+
+            except Exception:
+                # Keep the existing OpenCV detector available if YOLO fails
+                # on a frame instead of breaking the video tracking loop.
+                best = None
+
+        # Fallback to the original bright-region detector when YOLO is not
+        # loaded or did not return a beacon detection.
+        if best is None and self.yolo_model is None:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.GaussianBlur(gray, (7, 7), 0)
+            _, threshold = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(
+                threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            best_score = -1.0
+            reference_x = self.video_last_seen_x
+            reference_y = self.video_last_seen_y
+
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < 3 or area > frame_area * 0.05:
+                    continue
+                x, y, w, h = cv2.boundingRect(contour)
+                if w > self.video_frame_width * 0.35 or h > self.video_frame_height * 0.35:
+                    continue
+
+                cx = x + w / 2.0
+                cy = y + h / 2.0
+                brightness = float(gray[y:y+h, x:x+w].mean())
+                base_score = area * brightness
+
+                if reference_x is not None and reference_y is not None:
+                    jump = math.hypot(cx - reference_x, cy - reference_y)
+                    motion_score = math.exp(
+                        -jump / max(30.0, min(self.video_frame_width, self.video_frame_height) * 0.18)
+                    )
+                    score = base_score * (0.35 + 0.65 * motion_score)
+                else:
+                    score = base_score
+
+                if score > best_score:
+                    best_score = score
+                    best = (x, y, w, h, area)
 
         self.video_target_found = best is not None
 
@@ -1376,6 +1462,40 @@ class Environment(QWidget):
         # Controls are intentionally kept in the header menu/shortcuts.
         self.setFocus()
         self.update()
+
+    def go_home(self):
+        """Return to the FSOC Home page without changing the simulation.
+
+        If HomeWindow passed a reference to itself, reuse that window.
+        Otherwise create a new HomeWindow.
+        """
+        try:
+            # Stop/release camera resources before leaving Environment.
+            if self.video_capture is not None:
+                self.video_capture.release()
+                self.video_capture = None
+
+            if self.live_capture is not None:
+                self.live_capture.release()
+                self.live_capture = None
+
+            # Reuse the original Home window when available.
+            if hasattr(self, "home_window") and self.home_window is not None:
+                self.home_window.showMaximized()
+                self.close()
+                return
+
+            # Fallback: create Home if Environment was opened directly.
+            from home import HomeWindow
+
+            self.home_window = HomeWindow()
+            self.home_window.showMaximized()
+            self.close()
+
+        except Exception as e:
+            print("ERROR OPENING HOME:")
+            print(type(e).__name__)
+            print(str(e))
 
     def resizeEvent(self, event):
         self.menu_bar.setGeometry(0, 0, self.width(), 30)

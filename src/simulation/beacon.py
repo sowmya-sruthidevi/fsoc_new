@@ -11,8 +11,8 @@ class Beacon:
         self.radius = radius
 
         # Normal movement velocity
-        self.vx = 1.0
-        self.vy = 0.8
+        self.vx = 0.4
+        self.vy = 0.3
 
         # Counter for direction changes
         self.disturbance_counter = 0
