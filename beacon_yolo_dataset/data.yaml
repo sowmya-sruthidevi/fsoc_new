@@ -1,0 +1,11 @@
+
+
+
+# FSOC Beacon YOLO Dataset
+path: C:/Users/SRUTHI/Desktop/fsoc_new/FSOC_Virtual_Tracking/beacon_yolo_dataset
+train: C:/Users/SRUTHI/Desktop/fsoc_new/FSOC_Virtual_Tracking/beacon_yolo_dataset/cleaned/images/train
+val: C:/Users/SRUTHI/Desktop/fsoc_new/FSOC_Virtual_Tracking/beacon_yolo_dataset/cleaned/images/val
+
+nc: 1
+names:
+  0: beacon

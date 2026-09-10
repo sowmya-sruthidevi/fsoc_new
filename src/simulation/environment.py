@@ -489,7 +489,7 @@ class Environment(QWidget):
         # Save a useful sample instead of saving almost every frame.
         # The dataset stops automatically after this many images.
         self.dataset_sample_every = 15
-        self.dataset_max_samples = 1000
+        self.dataset_max_samples = 2000
         self.dataset_frame_counter = 0
         self.dataset_last_state = None
 
