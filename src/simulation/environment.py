@@ -1,5 +1,7 @@
 import random
 import math
+import csv
+from pathlib import Path
 
 from PySide6.QtWidgets import QWidget, QMenuBar, QFileDialog
 from PySide6.QtCore import QTimer, Qt
@@ -15,6 +17,11 @@ try:
     import cv2
 except ImportError:
     cv2 = None
+
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
 
 
 class Environment(QWidget):
@@ -71,6 +78,21 @@ class Environment(QWidget):
         mode_menu = self.menu_bar.addMenu("Mode")
         simulation_menu = self.menu_bar.addMenu("Simulation")
         help_menu = self.menu_bar.addMenu("Help")
+
+        ai_menu = self.menu_bar.addMenu("AI")
+        action = QAction("Start Dataset Collection", self)
+        action.triggered.connect(self.start_dataset_collection)
+        ai_menu.addAction(action)
+        action = QAction("Stop Dataset Collection", self)
+        action.triggered.connect(self.stop_dataset_collection)
+        ai_menu.addAction(action)
+        ai_menu.addSeparator()
+        action = QAction("Load YOLO Model", self)
+        action.triggered.connect(self.load_yolo_model)
+        ai_menu.addAction(action)
+        action = QAction("Disable YOLO Model", self)
+        action.triggered.connect(self.disable_yolo_model)
+        ai_menu.addAction(action)
 
         # =================================
         # OPERATING MODE MENU
@@ -405,6 +427,8 @@ class Environment(QWidget):
         self.video_confidence_history = []
         self.video_error_x_history = []
         self.video_error_y_history = []
+        self.video_raw_error_x_history = []
+        self.video_raw_error_y_history = []
 
         # =================================
         # LIVE CAMERA TRACKING
@@ -432,6 +456,8 @@ class Environment(QWidget):
         self.live_confidence_history = []
         self.live_error_x_history = []
         self.live_error_y_history = []
+        self.live_raw_error_x_history = []
+        self.live_raw_error_y_history = []
 
         # Virtual camera viewport for live tracking.
         # The physical webcam cannot pan programmatically, so the UI
@@ -440,6 +466,24 @@ class Environment(QWidget):
         self.live_camera_y = 0.0
         self.live_crop_ratio = 0.26
         self.live_camera_gain = 0.62
+
+        # =================================
+        # AI DATASET / YOLO MODEL
+        # =================================
+        self.dataset_collecting = False
+        self.dataset_root = None
+        self.dataset_images_dir = None
+        self.dataset_labels_dir = None
+        self.dataset_csv_path = None
+        self.dataset_sample_every = 5
+        self.dataset_frame_counter = 0
+        self.dataset_saved_count = 0
+        self.virtual_frame_index = 0
+        self.virtual_dataset_capture_pending = False
+        self.video_frame_index = 0
+        self.live_frame_index = 0
+        self.yolo_model = None
+        self.yolo_model_path = ""
 
         # =================================
         # TIMER
@@ -451,7 +495,7 @@ class Environment(QWidget):
             self.update_simulation
         )
 
-        self.timer.start(16)
+        self.timer.start(30)
 
 
     # =================================
@@ -533,6 +577,8 @@ class Environment(QWidget):
         self.video_confidence_history.clear()
         self.video_error_x_history.clear()
         self.video_error_y_history.clear()
+        self.video_raw_error_x_history.clear()
+        self.video_raw_error_y_history.clear()
 
         # Start the virtual camera at the uploaded video's center.
         self.video_camera_x = self.video_frame_width / 2.0 if self.video_frame_width else 0.0
@@ -603,6 +649,7 @@ class Environment(QWidget):
         if self.live_capture is None:
             return
 
+        self.live_frame_index += 1
         ok, frame = self.live_capture.read()
         if not ok:
             self.live_missing_frames += 1
@@ -711,6 +758,10 @@ class Environment(QWidget):
             x, y, w, h, area, beacon_contrast, beacon_white_ratio = best
             raw_x = x + w / 2.0
             raw_y = y + h / 2.0
+            self._save_ai_training_sample(
+                frame, (x, y, w, h), min(1.0, best_score / 255.0),
+                "live", self.live_frame_index
+            )
 
             if self.live_target_smooth_x is None:
                 self.live_target_smooth_x = raw_x
@@ -743,6 +794,8 @@ class Environment(QWidget):
             # ---------------------------------------------------------
             self.live_error_x = self.live_target_x - self.live_camera_x
             self.live_error_y = self.live_target_y - self.live_camera_y
+            live_raw_error_x = self.live_error_x
+            live_raw_error_y = self.live_error_y
 
             move_x = self.live_error_x * self.live_camera_gain
             move_y = self.live_error_y * self.live_camera_gain
@@ -792,6 +845,8 @@ class Environment(QWidget):
                 self.live_target_y = self.live_last_seen_y
                 self.live_error_x = self.live_target_x - self.live_camera_x
                 self.live_error_y = self.live_target_y - self.live_camera_y
+                live_raw_error_x = self.live_error_x
+                live_raw_error_y = self.live_error_y
 
                 # Continue the virtual camera motion for a few missed
                 # frames instead of freezing the viewport.
@@ -816,17 +871,19 @@ class Environment(QWidget):
                 self.live_confidence = max(0.0, self.live_confidence - 4.0)
                 self.live_error_x = 0.0
                 self.live_error_y = 0.0
+                live_raw_error_x = 0.0
+                live_raw_error_y = 0.0
                 self.state = "SEARCHING"
 
         self.live_confidence_history.append(self.live_confidence)
-        self.live_error_x_history.append(self.live_error_x)
-        self.live_error_y_history.append(self.live_error_y)
+        self.live_raw_error_x_history.append(live_raw_error_x)
+        self.live_raw_error_y_history.append(live_raw_error_y)
         if len(self.live_confidence_history) > self.max_graph_points:
             self.live_confidence_history.pop(0)
-        if len(self.live_error_x_history) > self.max_graph_points:
-            self.live_error_x_history.pop(0)
-        if len(self.live_error_y_history) > self.max_graph_points:
-            self.live_error_y_history.pop(0)
+        if len(self.live_raw_error_x_history) > self.max_graph_points:
+            self.live_raw_error_x_history.pop(0)
+        if len(self.live_raw_error_y_history) > self.max_graph_points:
+            self.live_raw_error_y_history.pop(0)
 
         self.update()
 
@@ -834,6 +891,7 @@ class Environment(QWidget):
         if self.video_capture is None:
             return
 
+        self.video_frame_index += 1
         ok, frame = self.video_capture.read()
         if not ok:
             self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -937,6 +995,14 @@ class Environment(QWidget):
             self.video_error_x = self.video_target_x - self.video_camera_x
             self.video_error_y = self.video_target_y - self.video_camera_y
 
+            raw_error_x = self.video_error_x
+            raw_error_y = self.video_error_y
+
+            self._save_ai_training_sample(
+                frame, (x, y, w, h), self.video_confidence / 100.0,
+                "video", self.video_frame_index
+            )
+
             # Virtual camera control: pan the displayed viewport toward the
             # detected beacon. This is the video equivalent of camera motion
             # in the Virtual Simulation mode.
@@ -975,6 +1041,8 @@ class Environment(QWidget):
                 self.video_target_y = self.video_last_seen_y
                 self.video_error_x = self.video_target_x - self.video_camera_x
                 self.video_error_y = self.video_target_y - self.video_camera_y
+                raw_error_x = self.video_error_x
+                raw_error_y = self.video_error_y
                 self.video_confidence = max(0.0, self.video_confidence - 1.5)
                 self.state = "TRACKING"
             else:
@@ -985,18 +1053,208 @@ class Environment(QWidget):
                 self.lock_status = "NOT LOCKED"
                 self.video_error_x = 0.0
                 self.video_error_y = 0.0
+                raw_error_x = 0.0
+                raw_error_y = 0.0
 
         # Keep a rolling history for the Video Upload performance graphs.
         self.video_confidence_history.append(self.video_confidence)
-        self.video_error_x_history.append(self.video_error_x)
-        self.video_error_y_history.append(self.video_error_y)
+        self.video_raw_error_x_history.append(raw_error_x)
+        self.video_raw_error_y_history.append(raw_error_y)
         if len(self.video_confidence_history) > self.max_graph_points:
             self.video_confidence_history.pop(0)
-        if len(self.video_error_x_history) > self.max_graph_points:
-            self.video_error_x_history.pop(0)
-        if len(self.video_error_y_history) > self.max_graph_points:
-            self.video_error_y_history.pop(0)
+        if len(self.video_raw_error_x_history) > self.max_graph_points:
+            self.video_raw_error_x_history.pop(0)
+        if len(self.video_raw_error_y_history) > self.max_graph_points:
+            self.video_raw_error_y_history.pop(0)
 
+        self.update()
+
+    # =================================
+    # AI DATASET COLLECTION / YOLO MODEL
+    # =================================
+
+    def start_dataset_collection(self):
+        if cv2 is None:
+            self.video_path = "OpenCV is required"
+            self.update()
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Select Dataset Folder")
+        if not folder:
+            return
+        root = Path(folder) / "beacon_yolo_dataset"
+        self.dataset_root = root
+        self.dataset_images_dir = root / "images" / "train"
+        self.dataset_labels_dir = root / "labels" / "train"
+        self.dataset_images_dir.mkdir(parents=True, exist_ok=True)
+        self.dataset_labels_dir.mkdir(parents=True, exist_ok=True)
+        self.dataset_csv_path = root / "annotations.csv"
+        self.dataset_frame_counter = 0
+        self.dataset_saved_count = 0
+        self.virtual_frame_index = 0
+        self.virtual_dataset_capture_pending = False
+        self.dataset_collecting = True
+        if not self.dataset_csv_path.exists():
+            with self.dataset_csv_path.open("w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    "image", "source", "frame", "class", "class_id",
+                    "x_center", "y_center", "width", "height", "confidence"
+                ])
+        self.update()
+
+    def stop_dataset_collection(self):
+        self.dataset_collecting = False
+        self.update()
+
+    def _queue_virtual_ai_training_sample(self):
+        """Queue a rendered Virtual Simulation frame for YOLO training."""
+        if (
+            not self.dataset_collecting
+            or self.operating_mode != "VIRTUAL"
+            or not self.target_visible
+            or self.virtual_dataset_capture_pending
+        ):
+            return
+
+        self.virtual_frame_index += 1
+        if self.virtual_frame_index % self.dataset_sample_every != 0:
+            return
+
+        if self.dataset_images_dir is None or self.dataset_labels_dir is None:
+            return
+
+        self.virtual_dataset_capture_pending = True
+        QTimer.singleShot(0, self._capture_virtual_ai_training_sample)
+
+    def _capture_virtual_ai_training_sample(self):
+        self.virtual_dataset_capture_pending = False
+
+        if (
+            not self.dataset_collecting
+            or self.operating_mode != "VIRTUAL"
+            or self.dataset_images_dir is None
+            or self.dataset_labels_dir is None
+            or cv2 is None
+        ):
+            return
+
+        # Save only the simulation area, not the right-hand dashboard.
+        sim_right = max(1, self.width() - 300)
+        crop_top = 55
+
+        shot = self.grab()
+        if shot.isNull():
+            return
+
+        crop_height = max(1, shot.height() - crop_top)
+        shot = shot.copy(0, crop_top, sim_right, crop_height)
+
+        stem = f"beacon_{self.dataset_saved_count:06d}"
+        image_path = self.dataset_images_dir / f"{stem}.jpg"
+        label_path = self.dataset_labels_dir / f"{stem}.txt"
+
+        if not shot.save(str(image_path), "JPG", 90):
+            return
+
+        radius = float(getattr(self.beacon, "radius", 10))
+        x = float(self.beacon.x - radius)
+        y = float(self.beacon.y - radius - crop_top)
+        w = float(radius * 2.0)
+        h = float(radius * 2.0)
+
+        frame_w = float(shot.width())
+        frame_h = float(shot.height())
+
+        # Clip the beacon box to the saved simulation image.
+        x = max(0.0, min(x, frame_w - 1.0))
+        y = max(0.0, min(y, frame_h - 1.0))
+        w = max(1.0, min(w, frame_w - x))
+        h = max(1.0, min(h, frame_h - y))
+
+        xc = (x + w / 2.0) / frame_w
+        yc = (y + h / 2.0) / frame_h
+        nw = w / frame_w
+        nh = h / frame_h
+
+        # Standard YOLO detection label:
+        # class_id x_center y_center width height
+        with label_path.open("w", encoding="utf-8") as f:
+            f.write(f"0 {xc:.6f} {yc:.6f} {nw:.6f} {nh:.6f}\n")
+
+        with self.dataset_csv_path.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                image_path.name,
+                "virtual",
+                int(self.virtual_frame_index),
+                "beacon",
+                0,
+                f"{xc:.6f}",
+                f"{yc:.6f}",
+                f"{nw:.6f}",
+                f"{nh:.6f}",
+                f"{float(self.confidence) / 100.0:.4f}",
+            ])
+
+        self.dataset_saved_count += 1
+
+    def _save_ai_training_sample(self, frame, bbox, confidence, source, frame_number):
+        if not self.dataset_collecting or cv2 is None or bbox is None:
+            return
+        if self.dataset_images_dir is None or self.dataset_labels_dir is None:
+            return
+        self.dataset_frame_counter += 1
+        if self.dataset_frame_counter % self.dataset_sample_every != 0:
+            return
+
+        x, y, w, h = [float(v) for v in bbox]
+        frame_h, frame_w = frame.shape[:2]
+        if frame_w <= 0 or frame_h <= 0 or w <= 0 or h <= 0:
+            return
+        x = max(0.0, min(x, frame_w - 1.0))
+        y = max(0.0, min(y, frame_h - 1.0))
+        w = max(1.0, min(w, frame_w - x))
+        h = max(1.0, min(h, frame_h - y))
+
+        stem = f"beacon_{self.dataset_saved_count:06d}"
+        image_path = self.dataset_images_dir / f"{stem}.jpg"
+        label_path = self.dataset_labels_dir / f"{stem}.txt"
+        if not cv2.imwrite(str(image_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90]):
+            return
+
+        xc = (x + w / 2.0) / frame_w
+        yc = (y + h / 2.0) / frame_h
+        nw = w / frame_w
+        nh = h / frame_h
+        with label_path.open("w", encoding="utf-8") as f:
+            f.write(f"0 {xc:.6f} {yc:.6f} {nw:.6f} {nh:.6f}\n")
+        with self.dataset_csv_path.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                image_path.name, source, int(frame_number), "beacon", 0,
+                f"{xc:.6f}", f"{yc:.6f}", f"{nw:.6f}", f"{nh:.6f}",
+                f"{float(confidence):.4f}"
+            ])
+        self.dataset_saved_count += 1
+
+    def load_yolo_model(self):
+        if YOLO is None:
+            self.video_path = "Install ultralytics first: pip install ultralytics"
+            self.update()
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Trained YOLO Beacon Model", "", "YOLO Model (*.pt);;All Files (*)"
+        )
+        if not path:
+            return
+        try:
+            self.yolo_model = YOLO(path)
+            self.yolo_model_path = path
+        except Exception as exc:
+            self.yolo_model = None
+            self.yolo_model_path = f"Model error: {exc}"
+        self.update()
+
+    def disable_yolo_model(self):
+        self.yolo_model = None
+        self.yolo_model_path = ""
         self.update()
 
     def select_environment(self, environment):
@@ -2499,6 +2757,11 @@ class Environment(QWidget):
                 if self.video_path:
                     painter.drawText(panel_x + 15, top + 226, self.video_path.split('/')[-1][-34:])
 
+                if self.dataset_collecting:
+                    painter.setPen(QColor(120, 120, 120))
+                    painter.drawText(panel_x + 15, top + 246,
+                                     f"AI dataset: RECORDING ({self.dataset_saved_count})")
+
                 # Optical-link status.
                 link_y = top + metrics_h + 10
                 self.draw_mode_optical_link(
@@ -2510,7 +2773,7 @@ class Environment(QWidget):
                 graph_h = 112
 
                 def draw_video_graph(x, y, w, h, title_text, history, ymin, ymax, line_color):
-                    painter.fillRect(x, y, w, h, QColor(18, 18, 18))
+                    painter.setBrush(Qt.NoBrush)
                     painter.setPen(QPen(QColor(58, 68, 82), 1))
                     painter.drawRect(x, y, w, h)
                     painter.setPen(QColor(74, 144, 226))
@@ -2542,20 +2805,34 @@ class Environment(QWidget):
                                  0, 100, QColor(52, 199, 154))
 
                 error_graph_y = graph_y + graph_h + 14
-                draw_video_graph(panel_x, error_graph_y, panel_w, graph_h,
-                                 "TRACKING ERROR (X / Y)", self.video_error_x_history,
-                                 -300, 300, QColor(74, 144, 226))
 
-                if len(self.video_error_y_history) >= 2:
+                # Plot the actual pre-correction tracking error.  This is
+                # intentionally different from the residual dashboard error:
+                # it shows how much correction the tracker had to make.
+                all_error_values = (
+                    list(self.video_raw_error_x_history) +
+                    list(self.video_raw_error_y_history)
+                )
+                if all_error_values:
+                    peak = max(abs(float(v)) for v in all_error_values)
+                    error_limit = max(40.0, min(300.0, peak * 1.15))
+                else:
+                    error_limit = 40.0
+
+                draw_video_graph(panel_x, error_graph_y, panel_w, graph_h,
+                                 "TRACKING ERROR (X / Y)", self.video_raw_error_x_history,
+                                 -error_limit, error_limit, QColor(74, 144, 226))
+
+                if len(self.video_raw_error_y_history) >= 2:
                     left = panel_x + 12
                     right = panel_x + panel_w - 12
                     top_p = error_graph_y + 32
                     bottom = error_graph_y + graph_h - 12
                     painter.setPen(QPen(QColor(220, 160, 55), 2))
                     points = []
-                    for i, value in enumerate(self.video_error_y_history):
-                        px = left + (i / max(1, len(self.video_error_y_history) - 1)) * (right - left)
-                        norm = max(0.0, min(1.0, (float(value) + 300.0) / 600.0))
+                    for i, value in enumerate(self.video_raw_error_y_history):
+                        px = left + (i / max(1, len(self.video_raw_error_y_history) - 1)) * (right - left)
+                        norm = max(0.0, min(1.0, (float(value) + error_limit) / (2.0 * error_limit)))
                         py = bottom - norm * (bottom - top_p)
                         points.append((int(px), int(py)))
                     for i in range(1, len(points)):
@@ -2598,8 +2875,9 @@ class Environment(QWidget):
                 graph_h = 118
                 for gy, title_text in ((graph_y, "CONFIDENCE (%)"),
                                        (graph_y + graph_h + 14, "TRACKING ERROR (X / Y)")):
-                    painter.fillRect(panel_x, gy, panel_w, graph_h, QColor(24, 29, 36))
+                    painter.setBrush(Qt.NoBrush)
                     painter.setPen(QPen(QColor(58, 68, 82), 1))
+                    painter.setBrush(Qt.NoBrush)
                     painter.drawRect(panel_x, gy, panel_w, graph_h)
                     painter.setPen(QColor(74, 144, 226))
                     painter.setFont(QFont("Arial", 10, QFont.Bold))
@@ -2811,6 +3089,11 @@ class Environment(QWidget):
                     else "Webcam: STOPPED"
                 )
 
+                if self.dataset_collecting:
+                    painter.setPen(QColor(120, 120, 120))
+                    painter.drawText(panel_x + 15, top + 264,
+                                     f"AI dataset: RECORDING ({self.dataset_saved_count})")
+
                 # Optical-link status.
                 link_y = top + 282
                 self.draw_mode_optical_link(
@@ -2822,8 +3105,9 @@ class Environment(QWidget):
                 graph_h = 112
 
                 def draw_graph(x, y, w, h, title, history, ymin, ymax):
-                    painter.fillRect(x, y, w, h, QColor(18, 18, 18))
+                    painter.setBrush(Qt.NoBrush)
                     painter.setPen(QPen(QColor(58, 68, 82), 1))
+                    painter.setBrush(Qt.NoBrush)
                     painter.drawRect(x, y, w, h)
                     painter.setPen(QColor(74, 144, 226))
                     painter.setFont(QFont("Arial", 10, QFont.Bold))
@@ -2848,16 +3132,30 @@ class Environment(QWidget):
                         painter.drawLine(points[i-1][0], points[i-1][1], points[i][0], points[i][1])
 
                 draw_graph(panel_x, graph_y, panel_w, graph_h, "CONFIDENCE (%)", self.live_confidence_history, 0, 100)
-                draw_graph(panel_x, graph_y + graph_h + 10, panel_w, graph_h, "TRACKING ERROR (X / Y)", self.live_error_x_history, -300, 300)
 
-                if len(self.live_error_y_history) >= 2:
+                error_graph_y = graph_y + graph_h + 10
+                all_error_values = (
+                    list(self.live_raw_error_x_history) +
+                    list(self.live_raw_error_y_history)
+                )
+                if all_error_values:
+                    peak = max(abs(float(v)) for v in all_error_values)
+                    error_limit = max(40.0, min(300.0, peak * 1.15))
+                else:
+                    error_limit = 40.0
+
+                draw_graph(panel_x, error_graph_y, panel_w, graph_h,
+                            "TRACKING ERROR (X / Y)", self.live_raw_error_x_history,
+                            -error_limit, error_limit)
+
+                if len(self.live_raw_error_y_history) >= 2:
                     x0, x1 = panel_x + 12, panel_x + panel_w - 12
-                    y0, y1 = graph_y + graph_h + 10 + 32, graph_y + graph_h + 10 + graph_h - 12
+                    y0, y1 = error_graph_y + 32, error_graph_y + graph_h - 12
                     painter.setPen(QPen(QColor(220, 160, 55), 2))
                     points = []
-                    for i, value in enumerate(self.live_error_y_history):
-                        px = x0 + (i / max(1, len(self.live_error_y_history) - 1)) * (x1 - x0)
-                        norm = max(0.0, min(1.0, (float(value) + 300.0) / 600.0))
+                    for i, value in enumerate(self.live_raw_error_y_history):
+                        px = x0 + (i / max(1, len(self.live_raw_error_y_history) - 1)) * (x1 - x0)
+                        norm = max(0.0, min(1.0, (float(value) + error_limit) / (2.0 * error_limit)))
                         py = y1 - norm * (y1 - y0)
                         points.append((int(px), int(py)))
                     for i in range(1, len(points)):
@@ -3876,6 +4174,7 @@ class Environment(QWidget):
 
         self.draw_graphs(painter)
 
+        self._queue_virtual_ai_training_sample()
         painter.end()
 
 
