@@ -470,14 +470,44 @@ class Environment(QWidget):
         # =================================
         # AI DATASET / YOLO MODEL
         # =================================
-        self.dataset_collecting = False
-        self.dataset_root = None
-        self.dataset_images_dir = None
-        self.dataset_labels_dir = None
-        self.dataset_csv_path = None
-        self.dataset_sample_every = 5
+        # =================================
+        # AI DATASET / YOLO MODEL
+        # =================================
+        # Collection is enabled automatically. Files are stored inside
+        # the project so the user does not have to choose a folder.
+        self.dataset_collecting = True
+        project_root = Path(__file__).resolve().parents[2]
+        self.dataset_root = project_root / "beacon_yolo_dataset"
+        self.dataset_images_dir = self.dataset_root / "images" / "train"
+        self.dataset_labels_dir = self.dataset_root / "labels" / "train"
+        self.dataset_csv_path = self.dataset_root / "annotations.csv"
+
+        self.dataset_images_dir.mkdir(parents=True, exist_ok=True)
+        self.dataset_labels_dir.mkdir(parents=True, exist_ok=True)
+
+        # Automatic collection settings.
+        # Save a useful sample instead of saving almost every frame.
+        # The dataset stops automatically after this many images.
+        self.dataset_sample_every = 15
+        self.dataset_max_samples = 1000
         self.dataset_frame_counter = 0
-        self.dataset_saved_count = 0
+        self.dataset_last_state = None
+
+        existing_images = list(self.dataset_images_dir.glob("beacon_*.jpg"))
+        self.dataset_saved_count = len(existing_images)
+
+        # If an old dataset already reached the limit, do not keep writing
+        # new files every time the application starts.
+        if self.dataset_saved_count >= self.dataset_max_samples:
+            self.dataset_collecting = False
+
+        if not self.dataset_csv_path.exists():
+            with self.dataset_csv_path.open("w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    "image", "source", "frame", "class", "class_id",
+                    "x_center", "y_center", "width", "height", "confidence"
+                ])
+
         self.virtual_frame_index = 0
         self.virtual_dataset_capture_pending = False
         self.video_frame_index = 0
@@ -1074,39 +1104,19 @@ class Environment(QWidget):
     # =================================
 
     def start_dataset_collection(self):
-        if cv2 is None:
-            self.video_path = "OpenCV is required"
-            self.update()
-            return
-        folder = QFileDialog.getExistingDirectory(self, "Select Dataset Folder")
-        if not folder:
-            return
-        root = Path(folder) / "beacon_yolo_dataset"
-        self.dataset_root = root
-        self.dataset_images_dir = root / "images" / "train"
-        self.dataset_labels_dir = root / "labels" / "train"
-        self.dataset_images_dir.mkdir(parents=True, exist_ok=True)
-        self.dataset_labels_dir.mkdir(parents=True, exist_ok=True)
-        self.dataset_csv_path = root / "annotations.csv"
-        self.dataset_frame_counter = 0
-        self.dataset_saved_count = 0
-        self.virtual_frame_index = 0
-        self.virtual_dataset_capture_pending = False
-        self.dataset_collecting = True
-        if not self.dataset_csv_path.exists():
-            with self.dataset_csv_path.open("w", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow([
-                    "image", "source", "frame", "class", "class_id",
-                    "x_center", "y_center", "width", "height", "confidence"
-                ])
+        # Resume automatic collection until the configured maximum is reached.
+        if self.dataset_saved_count < self.dataset_max_samples:
+            self.dataset_collecting = True
+            self.dataset_last_state = None
+        else:
+            self.dataset_collecting = False
         self.update()
 
     def stop_dataset_collection(self):
         self.dataset_collecting = False
         self.update()
 
-    def _queue_virtual_ai_training_sample(self):
-        """Queue a rendered Virtual Simulation frame for YOLO training."""
+    def _queue_virtual_dataset_sample(self):
         if (
             not self.dataset_collecting
             or self.operating_mode != "VIRTUAL"
@@ -1115,56 +1125,62 @@ class Environment(QWidget):
         ):
             return
 
+        # Hard safety limit: never create an unlimited number of images.
+        if self.dataset_saved_count >= self.dataset_max_samples:
+            self.dataset_collecting = False
+            return
+
         self.virtual_frame_index += 1
-        if self.virtual_frame_index % self.dataset_sample_every != 0:
+
+        # Capture the first visible frame of a new tracking state so the
+        # dataset contains different tracking conditions, not only LOCKED.
+        state_changed = self.state != self.dataset_last_state
+
+        # Otherwise sample periodically. At ~30 ms per simulation tick,
+        # every 15 frames is roughly one useful sample every 0.45 seconds.
+        periodic_sample = (
+            self.virtual_frame_index % self.dataset_sample_every == 0
+        )
+
+        if not state_changed and not periodic_sample:
             return
 
-        if self.dataset_images_dir is None or self.dataset_labels_dir is None:
-            return
-
+        self.dataset_last_state = self.state
         self.virtual_dataset_capture_pending = True
-        QTimer.singleShot(0, self._capture_virtual_ai_training_sample)
+        QTimer.singleShot(0, self._capture_virtual_dataset_sample)
 
-    def _capture_virtual_ai_training_sample(self):
+    def _capture_virtual_dataset_sample(self):
         self.virtual_dataset_capture_pending = False
 
         if (
             not self.dataset_collecting
             or self.operating_mode != "VIRTUAL"
+            or not self.target_visible
             or self.dataset_images_dir is None
             or self.dataset_labels_dir is None
-            or cv2 is None
         ):
             return
 
-        # Save only the simulation area, not the right-hand dashboard.
-        sim_right = max(1, self.width() - 300)
-        crop_top = 55
-
-        shot = self.grab()
-        if shot.isNull():
+        image = self.grab()
+        if image.isNull():
             return
-
-        crop_height = max(1, shot.height() - crop_top)
-        shot = shot.copy(0, crop_top, sim_right, crop_height)
 
         stem = f"beacon_{self.dataset_saved_count:06d}"
         image_path = self.dataset_images_dir / f"{stem}.jpg"
         label_path = self.dataset_labels_dir / f"{stem}.txt"
 
-        if not shot.save(str(image_path), "JPG", 90):
+        if not image.save(str(image_path), "JPG", 90):
             return
 
+        frame_w = float(image.width())
+        frame_h = float(image.height())
         radius = float(getattr(self.beacon, "radius", 10))
+
         x = float(self.beacon.x - radius)
-        y = float(self.beacon.y - radius - crop_top)
+        y = float(self.beacon.y - radius)
         w = float(radius * 2.0)
         h = float(radius * 2.0)
 
-        frame_w = float(shot.width())
-        frame_h = float(shot.height())
-
-        # Clip the beacon box to the saved simulation image.
         x = max(0.0, min(x, frame_w - 1.0))
         y = max(0.0, min(y, frame_h - 1.0))
         w = max(1.0, min(w, frame_w - x))
@@ -1175,8 +1191,6 @@ class Environment(QWidget):
         nw = w / frame_w
         nh = h / frame_h
 
-        # Standard YOLO detection label:
-        # class_id x_center y_center width height
         with label_path.open("w", encoding="utf-8") as f:
             f.write(f"0 {xc:.6f} {yc:.6f} {nw:.6f} {nh:.6f}\n")
 
@@ -1195,6 +1209,10 @@ class Environment(QWidget):
             ])
 
         self.dataset_saved_count += 1
+
+        # Automatically finish collection at the limit.
+        if self.dataset_saved_count >= self.dataset_max_samples:
+            self.dataset_collecting = False
 
     def _save_ai_training_sample(self, frame, bbox, confidence, source, frame_number):
         if not self.dataset_collecting or cv2 is None or bbox is None:
@@ -1233,6 +1251,10 @@ class Environment(QWidget):
                 f"{float(confidence):.4f}"
             ])
         self.dataset_saved_count += 1
+
+        # The same limit applies to video/live automatic collection.
+        if self.dataset_saved_count >= self.dataset_max_samples:
+            self.dataset_collecting = False
 
     def load_yolo_model(self):
         if YOLO is None:
@@ -2021,6 +2043,13 @@ class Environment(QWidget):
             self.lock_status = "NOT LOCKED"
 
         # =================================
+        # AUTOMATIC VIRTUAL DATASET COLLECTION
+        # =================================
+        # Collect training samples continuously while the virtual beacon
+        # is visible. No button press is required.
+        self._queue_virtual_dataset_sample()
+
+        # =================================
         # SAVE PREVIOUS VALUES
         # =================================
 
@@ -2760,7 +2789,7 @@ class Environment(QWidget):
                 if self.dataset_collecting:
                     painter.setPen(QColor(120, 120, 120))
                     painter.drawText(panel_x + 15, top + 246,
-                                     f"AI dataset: RECORDING ({self.dataset_saved_count})")
+                                     f"AI dataset: RECORDING ({self.dataset_saved_count}/{self.dataset_max_samples})")
 
                 # Optical-link status.
                 link_y = top + metrics_h + 10
@@ -3092,7 +3121,7 @@ class Environment(QWidget):
                 if self.dataset_collecting:
                     painter.setPen(QColor(120, 120, 120))
                     painter.drawText(panel_x + 15, top + 264,
-                                     f"AI dataset: RECORDING ({self.dataset_saved_count})")
+                                     f"AI dataset: RECORDING ({self.dataset_saved_count}/{self.dataset_max_samples})")
 
                 # Optical-link status.
                 link_y = top + 282
@@ -4174,7 +4203,6 @@ class Environment(QWidget):
 
         self.draw_graphs(painter)
 
-        self._queue_virtual_ai_training_sample()
         painter.end()
 
 
