@@ -401,6 +401,7 @@ class HomeWindow(QWidget):
 
         # Keep Environment reference
         self.environment_window = None
+        self.environment_loading = False
 
         self.setWindowTitle(
             "FSOC Virtual Camera Tracking System"
@@ -620,6 +621,10 @@ class HomeWindow(QWidget):
             footer
         )
 
+        # Prepare the existing Environment in advance so the START
+        # TRACKING button can open it immediately.
+        QTimer.singleShot(100, self.preload_environment)
+
     # ========================================================
     # RESIZE EVENT
     # ========================================================
@@ -633,6 +638,47 @@ class HomeWindow(QWidget):
         super().resizeEvent(event)
 
     # ========================================================
+    # PRELOAD ENVIRONMENT
+    # ========================================================
+
+    def preload_environment(self):
+
+        if self.environment_window is not None or self.environment_loading:
+            return
+
+        self.environment_loading = True
+
+        try:
+
+            from src.simulation.environment import Environment
+
+            print("Preloading Environment...")
+
+            self.environment_window = Environment()
+
+            self.environment_window.setWindowTitle(
+                "FSOC Virtual Camera Tracking System"
+            )
+
+            # Keep the hidden Environment idle until the user opens it.
+            if hasattr(self.environment_window, "timer"):
+                self.environment_window.timer.stop()
+
+            print("Environment preloaded successfully")
+
+        except Exception as e:
+
+            self.environment_window = None
+
+            print("Environment preload failed:")
+            print(type(e).__name__)
+            print(str(e))
+
+        finally:
+
+            self.environment_loading = False
+
+    # ========================================================
     # OPEN ENVIRONMENT
     # ========================================================
 
@@ -642,42 +688,35 @@ class HomeWindow(QWidget):
 
         try:
 
-            # Import only when button is clicked.
-            # This avoids unnecessary startup problems.
-            from src.simulation.environment import Environment
+            # The normal case: Environment has already been prepared.
+            if self.environment_window is None:
 
-            print("Environment imported successfully")
+                from src.simulation.environment import Environment
 
-            # Create the existing Environment window
-            self.environment_window = Environment()
+                print("Environment was not preloaded; creating now...")
 
-            print("Environment created successfully")
+                self.environment_window = Environment()
 
-            self.environment_window.setWindowTitle(
-                "FSOC Virtual Camera Tracking System"
-            )
+                self.environment_window.setWindowTitle(
+                    "FSOC Virtual Camera Tracking System"
+                )
 
-            # Show Environment
+            # Resume simulation when entering Environment.
+            if hasattr(self.environment_window, "timer"):
+                self.environment_window.timer.start()
+
+            # Show first, then hide Home for a smooth transition.
             self.environment_window.showMaximized()
 
             print("Environment window displayed")
 
-            # Hide Home only after Environment opens
             self.hide()
 
         except Exception as e:
 
-            print(
-                "ERROR OPENING ENVIRONMENT:"
-            )
-
-            print(
-                type(e).__name__
-            )
-
-            print(
-                str(e)
-            )
+            print("ERROR OPENING ENVIRONMENT:")
+            print(type(e).__name__)
+            print(str(e))
 
             QMessageBox.critical(
                 self,

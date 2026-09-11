@@ -95,6 +95,14 @@ class Environment(QWidget):
         ai_menu.addAction(action)
 
         # =================================
+        # HOME NAVIGATION
+        # =================================
+
+        home_action = QAction("Home", self)
+        home_action.triggered.connect(self.go_home)
+        self.menu_bar.addAction(home_action)
+
+        # =================================
         # OPERATING MODE MENU
         # =================================
 
@@ -397,9 +405,6 @@ class Environment(QWidget):
 
         self.video_capture = None
         self.video_path = ""
-        # True when the uploaded video reaches its final frame.
-        # The last frame and all tracking metrics remain visible.
-        self.video_completed = False
         self.video_frame = None
         self.video_frame_rgb = None
         self.video_frame_width = 0
@@ -519,6 +524,12 @@ class Environment(QWidget):
         self.yolo_model_path = ""
 
         # =================================
+        # HOME WINDOW REFERENCE
+        # =================================
+        # Set by HomeWindow when Environment is opened from the Home page.
+        self.home_window = None
+
+        # =================================
         # TIMER
         # =================================
 
@@ -538,6 +549,34 @@ class Environment(QWidget):
     # =================================
     # MENU ACTIONS
     # =================================
+
+    def go_home(self):
+        """Return to the existing Home page without creating duplicates."""
+        try:
+            # Stop active input before leaving the Environment.
+            if self.video_capture is not None:
+                self.video_capture.release()
+                self.video_capture = None
+            if self.live_capture is not None:
+                self.live_capture.release()
+                self.live_capture = None
+
+            if self.home_window is not None:
+                self.home_window.showMaximized()
+                self.home_window.raise_()
+                self.home_window.activateWindow()
+                self.close()
+                return
+
+            from home import HomeWindow
+            self.home_window = HomeWindow()
+            self.home_window.showMaximized()
+            self.close()
+
+        except Exception as e:
+            print("ERROR OPENING HOME:")
+            print(type(e).__name__)
+            print(str(e))
 
     def set_operating_mode(self, mode):
         if mode != "VIDEO" and self.video_capture is not None:
@@ -597,7 +636,6 @@ class Environment(QWidget):
             return
 
         self.video_path = path
-        self.video_completed = False
         self.operating_mode = "VIDEO"
         self.is_running = True
         self.video_target_found = False
@@ -952,16 +990,17 @@ class Environment(QWidget):
         self.video_frame_index += 1
         ok, frame = self.video_capture.read()
         if not ok:
-            # The uploaded video has reached the end. Do NOT loop back.
-            # Keep the last processed frame and freeze the tracking result.
-            self.video_completed = True
+            # ==========================================
+            # VIDEO COMPLETED
+            # ==========================================
+            # Do not restart the uploaded video.
+            # Release the capture and stop processing, while
+            # keeping the final frame and final tracking result
+            # visible on screen.
+            self.video_capture.release()
+            self.video_capture = None
             self.is_running = False
-            self.state = "VIDEO COMPLETED"
-
-            if self.video_capture is not None:
-                self.video_capture.release()
-                self.video_capture = None
-
+            self.state = "VIDEO COMPLETE"
             self.update()
             return
 
@@ -2762,7 +2801,10 @@ class Environment(QWidget):
 
             painter.setPen(QColor(74, 144, 226))
             painter.setFont(QFont("Arial", 17, QFont.Bold))
-            painter.drawText(20, 86, title)
+            if self.operating_mode == "VIDEO" and self.state == "VIDEO COMPLETE":
+                painter.drawText(20, 86, "VIDEO UPLOAD TRACKING MODE  •  FINAL RESULT")
+            else:
+                painter.drawText(20, 86, title)
 
             if self.operating_mode == "VIDEO" and self.video_frame is not None:
                 # ---------------------------------------------------------
@@ -2846,6 +2888,42 @@ class Environment(QWidget):
                     painter.setFont(QFont("Arial", 10, QFont.Bold))
                     painter.drawText(int(tx + 14), int(ty - 12), "BEACON")
 
+                # ---------------------------------------------------------
+                # VIDEO COMPLETE — clearly present the final tracking result
+                # while keeping the last processed frame and annotations.
+                # ---------------------------------------------------------
+                if self.state == "VIDEO COMPLETE":
+                    overlay_w = min(430, max(320, image.width() - 40))
+                    overlay_h = 92
+                    overlay_x = view_x + (image.width() - overlay_w) / 2
+                    overlay_y = top + (image.height() - overlay_h) / 2
+
+                    painter.setBrush(QColor(18, 18, 18, 225))
+                    painter.setPen(QPen(QColor(52, 199, 89), 2))
+                    painter.drawRoundedRect(
+                        int(overlay_x), int(overlay_y),
+                        int(overlay_w), overlay_h, 10, 10
+                    )
+
+                    painter.setPen(QColor(52, 199, 89))
+                    painter.setFont(QFont("Arial", 15, QFont.Bold))
+                    painter.drawText(
+                        int(overlay_x + 20), int(overlay_y + 34),
+                        "VIDEO COMPLETED"
+                    )
+
+                    painter.setPen(QColor(230, 230, 230))
+                    painter.setFont(QFont("Arial", 10, QFont.Bold))
+                    final_text = (
+                        f"FINAL TRACKING  •  "
+                        f"{'LOCKED' if self.video_lock else 'NOT LOCKED'}  •  "
+                        f"CONFIDENCE {self.video_confidence:.1f}%"
+                    )
+                    painter.drawText(
+                        int(overlay_x + 20), int(overlay_y + 62),
+                        final_text
+                    )
+
                 # Make the camera motion obvious to the user.
                 pan_x = self.video_error_x
                 pan_y = self.video_error_y
@@ -2860,15 +2938,6 @@ class Environment(QWidget):
                 painter.setFont(QFont("Arial", 9))
                 painter.drawText(view_x + 12, top + 44,
                                  f"Camera center: ({self.video_camera_x:.0f}, {self.video_camera_y:.0f})")
-
-                if self.video_completed:
-                    painter.setPen(QColor(52, 199, 89))
-                    painter.setFont(QFont("Arial", 10, QFont.Bold))
-                    painter.drawText(
-                        view_x + 12,
-                        top + 66,
-                        "VIDEO COMPLETED  •  FINAL TRACKING RESULT SHOWN"
-                    )
 
                 # Metrics panel.
                 metrics_h = 255
@@ -2887,17 +2956,8 @@ class Environment(QWidget):
                 if self.video_path:
                     painter.drawText(panel_x + 15, top + 226, self.video_path.split('/')[-1][-34:])
 
-                if self.video_completed:
-                    painter.setPen(QColor(52, 199, 89))
-                    painter.setFont(QFont("Arial", 9, QFont.Bold))
-                    painter.drawText(
-                        panel_x + 15,
-                        top + 246,
-                        "VIDEO COMPLETED  •  TRACKING FROZEN"
-                    )
-                elif self.dataset_collecting:
+                if self.dataset_collecting:
                     painter.setPen(QColor(120, 120, 120))
-                    painter.setFont(QFont("Arial", 9))
                     painter.drawText(panel_x + 15, top + 246,
                                      f"AI dataset: RECORDING ({self.dataset_saved_count}/{self.dataset_max_samples})")
 
