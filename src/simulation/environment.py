@@ -80,12 +80,6 @@ class Environment(QWidget):
         help_menu = self.menu_bar.addMenu("Help")
 
         ai_menu = self.menu_bar.addMenu("AI")
-
-        # Home button
-        home_action = QAction("Home", self)
-        home_action.triggered.connect(self.go_home)
-        self.menu_bar.addAction(home_action)
-
         action = QAction("Start Dataset Collection", self)
         action.triggered.connect(self.start_dataset_collection)
         ai_menu.addAction(action)
@@ -403,6 +397,9 @@ class Environment(QWidget):
 
         self.video_capture = None
         self.video_path = ""
+        # True when the uploaded video reaches its final frame.
+        # The last frame and all tracking metrics remain visible.
+        self.video_completed = False
         self.video_frame = None
         self.video_frame_rgb = None
         self.video_frame_width = 0
@@ -600,6 +597,7 @@ class Environment(QWidget):
             return
 
         self.video_path = path
+        self.video_completed = False
         self.operating_mode = "VIDEO"
         self.is_running = True
         self.video_target_found = False
@@ -954,10 +952,18 @@ class Environment(QWidget):
         self.video_frame_index += 1
         ok, frame = self.video_capture.read()
         if not ok:
-            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame = self.video_capture.read()
-            if not ok:
-                return
+            # The uploaded video has reached the end. Do NOT loop back.
+            # Keep the last processed frame and freeze the tracking result.
+            self.video_completed = True
+            self.is_running = False
+            self.state = "VIDEO COMPLETED"
+
+            if self.video_capture is not None:
+                self.video_capture.release()
+                self.video_capture = None
+
+            self.update()
+            return
 
         self.video_frame = frame
         self.video_frame_height, self.video_frame_width = frame.shape[:2]
@@ -1462,40 +1468,6 @@ class Environment(QWidget):
         # Controls are intentionally kept in the header menu/shortcuts.
         self.setFocus()
         self.update()
-
-    def go_home(self):
-        """Return to the FSOC Home page without changing the simulation.
-
-        If HomeWindow passed a reference to itself, reuse that window.
-        Otherwise create a new HomeWindow.
-        """
-        try:
-            # Stop/release camera resources before leaving Environment.
-            if self.video_capture is not None:
-                self.video_capture.release()
-                self.video_capture = None
-
-            if self.live_capture is not None:
-                self.live_capture.release()
-                self.live_capture = None
-
-            # Reuse the original Home window when available.
-            if hasattr(self, "home_window") and self.home_window is not None:
-                self.home_window.showMaximized()
-                self.close()
-                return
-
-            # Fallback: create Home if Environment was opened directly.
-            from home import HomeWindow
-
-            self.home_window = HomeWindow()
-            self.home_window.showMaximized()
-            self.close()
-
-        except Exception as e:
-            print("ERROR OPENING HOME:")
-            print(type(e).__name__)
-            print(str(e))
 
     def resizeEvent(self, event):
         self.menu_bar.setGeometry(0, 0, self.width(), 30)
@@ -2889,6 +2861,15 @@ class Environment(QWidget):
                 painter.drawText(view_x + 12, top + 44,
                                  f"Camera center: ({self.video_camera_x:.0f}, {self.video_camera_y:.0f})")
 
+                if self.video_completed:
+                    painter.setPen(QColor(52, 199, 89))
+                    painter.setFont(QFont("Arial", 10, QFont.Bold))
+                    painter.drawText(
+                        view_x + 12,
+                        top + 66,
+                        "VIDEO COMPLETED  •  FINAL TRACKING RESULT SHOWN"
+                    )
+
                 # Metrics panel.
                 metrics_h = 255
                 painter.fillRect(panel_x, top, panel_w, metrics_h, QColor(28, 28, 28))
@@ -2906,8 +2887,17 @@ class Environment(QWidget):
                 if self.video_path:
                     painter.drawText(panel_x + 15, top + 226, self.video_path.split('/')[-1][-34:])
 
-                if self.dataset_collecting:
+                if self.video_completed:
+                    painter.setPen(QColor(52, 199, 89))
+                    painter.setFont(QFont("Arial", 9, QFont.Bold))
+                    painter.drawText(
+                        panel_x + 15,
+                        top + 246,
+                        "VIDEO COMPLETED  •  TRACKING FROZEN"
+                    )
+                elif self.dataset_collecting:
                     painter.setPen(QColor(120, 120, 120))
+                    painter.setFont(QFont("Arial", 9))
                     painter.drawText(panel_x + 15, top + 246,
                                      f"AI dataset: RECORDING ({self.dataset_saved_count}/{self.dataset_max_samples})")
 
